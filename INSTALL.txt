@@ -1,0 +1,31 @@
+To install:
+
+$ mkdir ~/fastr-compiler
+$ cd fastr-compiler
+
+Clone mx:
+
+$ git clone https://github.com/graalvm/mx
+$ export PATH=$PWD/mx:$PATH 
+ 
+Download JVMCI 0.21 from Oracle OTN
+
+$ cp ~/Downloads/labsjdk-8u92-jvmci-0.21-linux-amd64.tar.gz .
+$ tar xvzf labsjdk-8u92-jvmci-0.21-linux-amd64.tar.gz 
+ 
+$ export JAVA_HOME=`pwd`/labsjdk1.8.0_92-jvmci-0.21
+ 
+Clone FastR:
+
+$ git clone https://github.com/graalvm/fastr
+$ cd fastr
+
+Compile FastR:
+
+$ mx build
+
+
+Run:
+
+$ mx R 
+
