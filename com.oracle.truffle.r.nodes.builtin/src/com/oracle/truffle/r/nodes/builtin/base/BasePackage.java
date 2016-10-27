@@ -503,7 +503,7 @@ public class BasePackage extends RBuiltinPackage {
         add(Mean.class, MeanNodeGen::create);
         add(Merge.class, MergeNodeGen::create);
         add(Min.class, MinNodeGen::create);
-        add(Missing.class, Missing::create, Missing::createSpecial);
+        add(Missing.class, MissingNodeGen::create);
         add(NumericalFunctions.Mod.class, NumericalFunctionsFactory.ModNodeGen::create);
         add(NArgs.class, NArgsNodeGen::create);
         add(NChar.class, NCharNodeGen::create);
@@ -562,6 +562,7 @@ public class BasePackage extends RBuiltinPackage {
         add(S3DispatchFunctions.NextMethod.class, S3DispatchFunctionsFactory.NextMethodNodeGen::create);
         add(S3DispatchFunctions.UseMethod.class, S3DispatchFunctionsFactory.UseMethodNodeGen::create);
         add(Sample.class, SampleNodeGen::create);
+        add(Sample2.class, Sample2NodeGen::create);
         add(Scan.class, ScanNodeGen::create);
         add(Seq.class, SeqNodeGen::create);
         add(SeqAlong.class, SeqAlongNodeGen::create);
