@@ -4,7 +4,7 @@
  * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * Copyright (c) 2014, Purdue University
- * Copyright (c) 2014, 2016, Oracle and/or its affiliates
+ * Copyright (c) 2014, 2017, Oracle and/or its affiliates
  *
  * All rights reserved.
  */
@@ -15,10 +15,7 @@ import static com.oracle.truffle.r.runtime.builtins.RBehavior.COMPLEX;
 import static com.oracle.truffle.r.runtime.builtins.RBuiltinKind.PRIMITIVE;
 import static com.oracle.truffle.r.runtime.builtins.RBuiltinKind.SUBSTITUTE;
 
-import java.util.Arrays;
-
 import com.oracle.truffle.api.CompilerDirectives;
-import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.FrameInstance.FrameAccess;
 import com.oracle.truffle.api.frame.MaterializedFrame;
@@ -48,13 +45,13 @@ import com.oracle.truffle.r.runtime.ReturnException;
 import com.oracle.truffle.r.runtime.Utils;
 import com.oracle.truffle.r.runtime.builtins.RBuiltin;
 import com.oracle.truffle.r.runtime.data.RArgsValuesAndNames;
-import com.oracle.truffle.r.runtime.data.RAttributeProfiles;
 import com.oracle.truffle.r.runtime.data.RDataFactory;
 import com.oracle.truffle.r.runtime.data.RMissing;
 import com.oracle.truffle.r.runtime.data.RNull;
 import com.oracle.truffle.r.runtime.data.RPromise;
 import com.oracle.truffle.r.runtime.data.RStringVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractContainer;
+import com.oracle.truffle.r.runtime.data.model.RAbstractStringVector;
 
 public abstract class S3DispatchFunctions extends RBuiltinNode {
 
@@ -66,7 +63,7 @@ public abstract class S3DispatchFunctions extends RBuiltinNode {
 
     protected S3DispatchFunctions(boolean nextMethod) {
         methodLookup = S3FunctionLookupNode.create(true, nextMethod);
-        callMatcher = CallMatcherNode.create(nextMethod, false);
+        callMatcher = CallMatcherNode.create(false);
     }
 
     protected MaterializedFrame getCallerFrame(VirtualFrame frame) {
@@ -185,7 +182,6 @@ public abstract class S3DispatchFunctions extends RBuiltinNode {
         @Child private CombineSignaturesNode combineSignatures;
         @Child private CollectArgumentsNode collectArguments = CollectArgumentsNodeGen.create();
 
-        @CompilationFinal private RAttributeProfiles attrProfiles;
         @Child private PromiseHelperNode promiseHelper;
 
         private final BranchProfile errorProfile = BranchProfile.create();
@@ -206,14 +202,25 @@ public abstract class S3DispatchFunctions extends RBuiltinNode {
             return new Object[]{RNull.instance, RNull.instance, RArgsValuesAndNames.EMPTY};
         }
 
-        @Specialization
-        protected Object nextMethod(VirtualFrame frame, @SuppressWarnings("unused") RNull nullGeneric, Object obj, RArgsValuesAndNames args) {
+        /**
+         * When {@code NextMethod} is invoked with first argument which is not a string, the
+         * argument is swallowed and ignored.
+         */
+        @Specialization(guards = "isNotString(ignoredGeneric)")
+        protected Object nextMethod(VirtualFrame frame, @SuppressWarnings("unused") Object ignoredGeneric, Object obj, RArgsValuesAndNames args) {
             String generic = (String) rvnGeneric.execute(frame);
             if (generic == null || generic.isEmpty()) {
                 errorProfile.enter();
                 throw RError.error(this, RError.Message.GEN_FUNCTION_NOT_SPECIFIED);
             }
             return nextMethod(frame, generic, obj, args);
+        }
+
+        protected static boolean isNotString(Object obj) {
+            // Note: if RAbstractStringVector becomes expected, then it must have length == 1, GnuR
+            // ignores character vectors longer than 1 as the "generic" argument of NextMethod
+            assert !(obj instanceof RAbstractStringVector) || ((RAbstractStringVector) obj).getLength() != 1 : "unexpected RAbstractStringVector with length != 1";
+            return !(obj instanceof String);
         }
 
         @SuppressWarnings("unused")
@@ -223,22 +230,24 @@ public abstract class S3DispatchFunctions extends RBuiltinNode {
             MaterializedFrame genericDefFrame = getDefFrame(frame);
             String group = (String) rvnGroup.execute(frame);
 
-            ArgumentsSignature suppliedSignature;
-            ArgumentsSignature parameterSignature = suppliedParameterSignatureProfile.profile(RArguments.getSuppliedSignature(frame));
+            // The signature that will be used for the target of NextMethod is concatenation of the
+            // actual signature used when invoking the S3 dispatch function combined with any named
+            // arguments passed to NextMethod, the later override the former on a name clash
+            ArgumentsSignature finalSignature;
+            ArgumentsSignature suppliedSignature = suppliedParameterSignatureProfile.profile(RArguments.getSuppliedSignature(frame));
             Object[] suppliedArguments = collectArguments.execute(frame, parameterSignatureProfile.profile(RArguments.getSignature(frame)));
             if (emptyArgsProfile.profile(args == RArgsValuesAndNames.EMPTY)) {
-                suppliedSignature = parameterSignature;
+                finalSignature = suppliedSignature;
             } else {
                 if (combineSignatures == null) {
                     CompilerDirectives.transferToInterpreterAndInvalidate();
                     combineSignatures = insert(CombineSignaturesNodeGen.create());
                 }
-                suppliedSignature = combineSignatures.execute(parameterSignature, args.getSignature());
-
-                suppliedArguments = Arrays.copyOf(suppliedArguments, suppliedSignature.getLength());
-                System.arraycopy(args.getArguments(), 0, suppliedArguments, parameterSignature.getLength(), suppliedSignature.getLength() - parameterSignature.getLength());
+                RArgsValuesAndNames combinedResult = combineSignatures.execute(suppliedSignature, suppliedArguments, args.getSignature(), args.getArguments());
+                suppliedArguments = combinedResult.getArguments();
+                finalSignature = combinedResult.getSignature();
             }
-            return dispatch(frame, generic, readType(frame), group, genericCallFrame, genericDefFrame, suppliedSignature, suppliedArguments);
+            return dispatch(frame, generic, readType(frame), group, genericCallFrame, genericDefFrame, finalSignature, suppliedArguments);
         }
 
         private MaterializedFrame getDefFrame(VirtualFrame frame) {
@@ -269,7 +278,6 @@ public abstract class S3DispatchFunctions extends RBuiltinNode {
         private RStringVector getAlternateClassHr(VirtualFrame frame) {
             if (promiseHelper == null) {
                 CompilerDirectives.transferToInterpreterAndInvalidate();
-                attrProfiles = RAttributeProfiles.create();
                 promiseHelper = insert(new PromiseHelperNode());
             }
             if (RArguments.getArgumentsLength(frame) == 0 || RArguments.getArgument(frame, 0) == null ||
@@ -284,5 +292,6 @@ public abstract class S3DispatchFunctions extends RBuiltinNode {
             RAbstractContainer enclosingArg = (RAbstractContainer) arg;
             return enclosingArg.getClassHierarchy();
         }
+
     }
 }

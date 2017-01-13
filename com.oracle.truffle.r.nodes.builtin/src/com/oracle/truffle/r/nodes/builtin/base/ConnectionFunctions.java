@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,12 +22,16 @@
  */
 package com.oracle.truffle.r.nodes.builtin.base;
 
+import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.asIntegerVector;
 import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.equalTo;
+import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.findFirst;
 import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.gte;
 import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.instanceOf;
+import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.integerValue;
 import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.logicalTrue;
 import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.lte;
 import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.notEmpty;
+import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.rawValue;
 import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.singleElement;
 import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.stringValue;
 import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.toBoolean;
@@ -48,7 +52,6 @@ import java.nio.ByteOrder;
 import java.nio.DoubleBuffer;
 import java.nio.IntBuffer;
 import java.util.ArrayList;
-import java.util.zip.ZipException;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
@@ -58,13 +61,15 @@ import com.oracle.truffle.r.nodes.builtin.CastBuilder;
 import com.oracle.truffle.r.nodes.builtin.RBuiltinNode;
 import com.oracle.truffle.r.nodes.builtin.base.ConnectionFunctionsFactory.WriteDataNodeGen;
 import com.oracle.truffle.r.nodes.builtin.casts.fluent.HeadPhaseBuilder;
+import com.oracle.truffle.r.runtime.RCompression;
 import com.oracle.truffle.r.runtime.RError;
+import com.oracle.truffle.r.runtime.RError.Message;
 import com.oracle.truffle.r.runtime.RInternalError;
 import com.oracle.truffle.r.runtime.RRuntime;
 import com.oracle.truffle.r.runtime.builtins.RBuiltin;
+import com.oracle.truffle.r.runtime.conn.CompressedConnections.CompressedRConnection;
 import com.oracle.truffle.r.runtime.conn.ConnectionSupport.BaseRConnection;
 import com.oracle.truffle.r.runtime.conn.FileConnections.FileRConnection;
-import com.oracle.truffle.r.runtime.conn.GZIPConnections.GZIPRConnection;
 import com.oracle.truffle.r.runtime.conn.RConnection;
 import com.oracle.truffle.r.runtime.conn.SocketConnections.RSocketConnection;
 import com.oracle.truffle.r.runtime.conn.TextConnections.TextRConnection;
@@ -106,8 +111,8 @@ public abstract class ConnectionFunctions {
     public abstract static class Stdin extends RBuiltinNode {
         @Specialization
         @TruffleBoundary
-        protected RConnection stdin() {
-            return getStdin();
+        protected RAbstractIntVector stdin() {
+            return getStdin().asVector();
         }
     }
 
@@ -115,8 +120,8 @@ public abstract class ConnectionFunctions {
     public abstract static class Stdout extends RBuiltinNode {
         @Specialization
         @TruffleBoundary
-        protected RConnection stdout() {
-            return getStdout();
+        protected RAbstractIntVector stdout() {
+            return getStdout().asVector();
         }
     }
 
@@ -124,12 +129,12 @@ public abstract class ConnectionFunctions {
     public abstract static class Stderr extends RBuiltinNode {
         @Specialization
         @TruffleBoundary
-        protected RConnection stderr() {
-            return getStderr();
+        protected RAbstractIntVector stderr() {
+            return getStderr().asVector();
         }
     }
 
-    private static final class Casts {
+    public static final class Casts {
         private static void description(CastBuilder casts) {
             casts.arg("description").mustBe(stringValue()).asStringVector().shouldBe(singleElement(), RError.Message.ARGUMENT_ONLY_FIRST_1, "description").findFirst().notNA();
         }
@@ -150,8 +155,8 @@ public abstract class ConnectionFunctions {
             casts.arg("blocking").asLogicalVector().findFirst().notNA().map(toBoolean());
         }
 
-        private static void connection(CastBuilder casts) {
-            casts.arg("con").mustBe(instanceOf(RConnection.class));
+        public static void connection(CastBuilder casts) {
+            casts.arg("con").defaultError(Message.INVALID_CONNECTION).mustNotBeNull().asIntegerVector().findFirst();
         }
 
         private static void nchars(CastBuilder casts) {
@@ -162,9 +167,24 @@ public abstract class ConnectionFunctions {
             casts.arg("useBytes").asLogicalVector().findFirst().notNA().map(toBoolean());
         }
 
+        private static void n(CastBuilder casts) {
+            casts.arg("n").asIntegerVector().findFirst().mustBe(gte(0));
+        }
+
+        private static void size(CastBuilder casts) {
+            casts.arg("size").asIntegerVector().findFirst();
+        }
+
+        private static void swap(CastBuilder casts) {
+            casts.arg("swap").asLogicalVector().findFirst().notNA().map(toBoolean());
+        }
+
+        private static void method(CastBuilder casts) {
+            casts.arg("method").asStringVector().findFirst();
+        }
     }
 
-    @RBuiltin(name = "file", kind = INTERNAL, parameterNames = {"description", "open", "blocking", "encoding", "raw"}, behavior = IO)
+    @RBuiltin(name = "file", kind = INTERNAL, parameterNames = {"description", "open", "blocking", "encoding", "method", "raw"}, behavior = IO)
     public abstract static class File extends RBuiltinNode {
 
         @Override
@@ -173,15 +193,16 @@ public abstract class ConnectionFunctions {
             Casts.open(casts);
             casts.arg("blocking").asLogicalVector().findFirst().mustBe(logicalTrue(), RError.Message.NYI, "non-blocking mode not supported").map(toBoolean());
             Casts.encoding(casts);
+            Casts.method(casts);
             Casts.raw(casts);
         }
 
         @Specialization
         @TruffleBoundary
         @SuppressWarnings("unused")
-        protected Object file(String description, String openArg, boolean blocking, String encoding, boolean raw) {
+        protected RAbstractIntVector file(String description, String openArg, boolean blocking, String encoding, String method, boolean raw) {
             String open = openArg;
-            // TODO handle http/ftp prefixes and redirect
+            // TODO handle http/ftp prefixes and redirect and method
             String path = removeFileURLPrefix(description);
             if (path.length() == 0) {
                 // special case, temp file opened in "w+" or "w+b" only
@@ -195,7 +216,7 @@ public abstract class ConnectionFunctions {
                 }
             }
             try {
-                return new FileRConnection(path, open);
+                return new FileRConnection(path, open).asVector();
             } catch (IOException ex) {
                 RError.warning(this, RError.Message.CANNOT_OPEN_FILE, description, ex.getMessage());
                 throw RError.error(this, RError.Message.CANNOT_OPEN_CONNECTION);
@@ -204,34 +225,31 @@ public abstract class ConnectionFunctions {
 
     }
 
-    /**
-     * {@code gzfile} is very versatile (unfortunately); it can open uncompressed files, and files
-     * compressed by {@code bzip2, xz, lzma}. Currently we only support {@code gzip} and
-     * uncompressed.
+    /*
+     * In GNUR R {@code gzfile, bzfile, xzfile} are very versatile on input; they can open
+     * uncompressed files, and files compressed by {@code bzip2, xz, lzma}.
      */
-    @RBuiltin(name = "gzfile", kind = INTERNAL, parameterNames = {"description", "open", "encoding", "compression"}, behavior = IO)
-    public abstract static class GZFile extends RBuiltinNode {
+
+    public abstract static class ZZFileAdapter extends RBuiltinNode {
+        private final RCompression.Type cType;
+
+        protected ZZFileAdapter(RCompression.Type cType) {
+            this.cType = cType;
+        }
+
         @Override
         protected void createCasts(CastBuilder casts) {
             Casts.description(casts);
             Casts.open(casts);
             Casts.encoding(casts);
-            casts.arg("compression").asIntegerVector().findFirst().notNA().mustBe(gte(0).and(lte(9)));
+            casts.arg("compression").asIntegerVector().findFirst().notNA().mustBe(gte(cType == RCompression.Type.XZ ? -9 : 0).and(lte(9)));
         }
 
         @Specialization
         @TruffleBoundary
-        @SuppressWarnings("unused")
-        protected Object gzFile(RAbstractStringVector description, String open, RAbstractStringVector encoding, int compression) {
+        protected RAbstractIntVector zzFile(RAbstractStringVector description, String open, String encoding, int compression) {
             try {
-                return new GZIPRConnection(description.getDataAt(0), open);
-            } catch (ZipException ex) {
-                // wasn't a gzip file, try uncompressed text
-                try {
-                    return new FileRConnection(description.getDataAt(0), "r");
-                } catch (IOException ex1) {
-                    throw reportError(description.getDataAt(0), ex1);
-                }
+                return new CompressedRConnection(description.getDataAt(0), open, cType, encoding, compression).asVector();
             } catch (IOException ex) {
                 throw reportError(description.getDataAt(0), ex);
             }
@@ -241,6 +259,30 @@ public abstract class ConnectionFunctions {
             RError.warning(this, RError.Message.CANNOT_OPEN_FILE, path, ex.getMessage());
             throw RError.error(this, RError.Message.CANNOT_OPEN_CONNECTION);
         }
+    }
+
+    @RBuiltin(name = "gzfile", kind = INTERNAL, parameterNames = {"description", "open", "encoding", "compression"}, behavior = IO)
+    public abstract static class GZFile extends ZZFileAdapter {
+        protected GZFile() {
+            super(RCompression.Type.GZIP);
+        }
+
+    }
+
+    @RBuiltin(name = "bzfile", kind = INTERNAL, parameterNames = {"description", "open", "encoding", "compression"}, behavior = IO)
+    public abstract static class BZFile extends ZZFileAdapter {
+        protected BZFile() {
+            super(RCompression.Type.BZIP2);
+        }
+
+    }
+
+    @RBuiltin(name = "xzfile", kind = INTERNAL, parameterNames = {"description", "open", "encoding", "compression"}, behavior = IO)
+    public abstract static class XZFile extends ZZFileAdapter {
+        protected XZFile() {
+            super(RCompression.Type.XZ);
+        }
+
     }
 
     @RBuiltin(name = "textConnection", kind = INTERNAL, parameterNames = {"description", "text", "open", "env", "encoding"}, behavior = IO)
@@ -267,7 +309,7 @@ public abstract class ConnectionFunctions {
 
         @Specialization
         @TruffleBoundary
-        protected Object textConnection(String description, Object text, String open, REnvironment env, @SuppressWarnings("unused") int encoding) {
+        protected RAbstractIntVector textConnection(String description, Object text, String open, REnvironment env, @SuppressWarnings("unused") int encoding) {
             RAbstractStringVector object;
             if (open.length() == 0 || open.equals("r")) {
                 if (text == RNull.instance) {
@@ -283,7 +325,7 @@ public abstract class ConnectionFunctions {
                 }
             }
             try {
-                return new TextRConnection(description, object, env, open);
+                return new TextRConnection(description, object, env, open).asVector();
             } catch (IOException ex) {
                 throw RInternalError.shouldNotReachHere();
             }
@@ -295,13 +337,18 @@ public abstract class ConnectionFunctions {
     public abstract static class TextConnectionValue extends RBuiltinNode {
         @Override
         protected void createCasts(CastBuilder casts) {
-            casts.arg("con").mustBe(instanceOf(TextRConnection.class), RError.Message.NOT_A_TEXT_CONNECTION);
+            casts.arg("con").defaultError(Message.NOT_A_TEXT_CONNECTION).mustNotBeNull().mustBe(integerValue()).asIntegerVector().findFirst();
         }
 
         @Specialization
         @TruffleBoundary
-        protected Object textConnection(TextRConnection conn) {
-            return RDataFactory.createStringVector(conn.getValue(), RDataFactory.COMPLETE_VECTOR);
+        protected Object textConnection(int con) {
+            RConnection connection = RConnection.fromIndex(con);
+            if (connection instanceof TextRConnection) {
+                return RDataFactory.createStringVector(((TextRConnection) connection).getValue(), RDataFactory.COMPLETE_VECTOR);
+            } else {
+                throw RError.error(RError.SHOW_CALLER, Message.NOT_A_TEXT_CONNECTION);
+            }
         }
     }
 
@@ -320,13 +367,13 @@ public abstract class ConnectionFunctions {
 
         @Specialization
         @TruffleBoundary
-        protected Object socketConnection(String host, int port, boolean server, boolean blocking, String open,
+        protected RAbstractIntVector socketConnection(String host, int port, boolean server, boolean blocking, String open,
                         @SuppressWarnings("unused") RAbstractStringVector encoding, int timeout) {
             try {
                 if (server) {
-                    return new RSocketConnection(open, true, host, port, blocking, timeout);
+                    return new RSocketConnection(open, true, host, port, blocking, timeout).asVector();
                 } else {
-                    return new RSocketConnection(open, false, host, port, blocking, timeout);
+                    return new RSocketConnection(open, false, host, port, blocking, timeout).asVector();
                 }
             } catch (IOException ex) {
                 throw RError.error(this, RError.Message.CANNOT_OPEN_CONNECTION);
@@ -334,7 +381,7 @@ public abstract class ConnectionFunctions {
         }
     }
 
-    @RBuiltin(name = "url", kind = INTERNAL, parameterNames = {"description", "open", "blocking", "encoding"}, behavior = IO)
+    @RBuiltin(name = "url", kind = INTERNAL, parameterNames = {"description", "open", "blocking", "encoding", "method"}, behavior = IO)
     public abstract static class URLConnection extends RBuiltinNode {
 
         @Override
@@ -343,13 +390,15 @@ public abstract class ConnectionFunctions {
             Casts.open(casts);
             Casts.blocking(casts);
             Casts.encoding(casts);
+            Casts.method(casts);
         }
 
         @Specialization
         @TruffleBoundary
-        protected Object urlConnection(String url, String open, @SuppressWarnings("unused") boolean blocking, @SuppressWarnings("unused") String encoding) {
+        protected RAbstractIntVector urlConnection(String url, String open, @SuppressWarnings("unused") boolean blocking, @SuppressWarnings("unused") String encoding,
+                        @SuppressWarnings("unused") String method) {
             try {
-                return new URLRConnection(url, open);
+                return new URLRConnection(url, open).asVector();
             } catch (MalformedURLException ex) {
                 throw RError.error(this, RError.Message.UNSUPPORTED_URL_SCHEME);
             } catch (IOException ex) {
@@ -358,36 +407,23 @@ public abstract class ConnectionFunctions {
         }
     }
 
-    private abstract static class CheckIsConnAdapter extends RBuiltinNode {
-        protected RConnection checkIsConnection(Object con) throws RError {
-            if (!(con instanceof RConnection)) {
-                throw RError.error(this, RError.Message.NOT_CONNECTION, "con");
-            } else {
-                return (RConnection) con;
-            }
-        }
-    }
-
-    @RBuiltin(name = "summary.connection", kind = INTERNAL, parameterNames = {"object}"}, behavior = IO)
-    public abstract static class Summary extends CheckIsConnAdapter {
+    @RBuiltin(name = "summary.connection", kind = INTERNAL, parameterNames = {"object"}, behavior = IO)
+    public abstract static class Summary extends RBuiltinNode {
         private static final RStringVector NAMES = RDataFactory.createStringVector(new String[]{"description", "class", "mode", "text", "opened", "can read", "can write"},
                         RDataFactory.COMPLETE_VECTOR);
 
+        @Override
+        protected void createCasts(CastBuilder casts) {
+            casts.arg("object").defaultError(Message.INVALID_CONNECTION).mustNotBeNull().asIntegerVector().findFirst();
+        }
+
         @Specialization
         @TruffleBoundary
-        protected RList summary(Object object) {
-            BaseRConnection baseCon;
-            if (object instanceof Integer) {
-                baseCon = RContext.getInstance().stateRConnection.getConnection((int) object);
-            } else if (object instanceof Double) {
-                baseCon = RContext.getInstance().stateRConnection.getConnection((int) Math.floor((Double) object));
-            } else {
-                RConnection con = checkIsConnection(object);
-                baseCon = getBaseConnection(con);
-            }
+        protected RList summary(int object) {
+            BaseRConnection baseCon = RConnection.fromIndex(object);
             Object[] data = new Object[NAMES.getLength()];
             data[0] = baseCon.getSummaryDescription();
-            data[1] = baseCon.getClassHierarchy().getDataAt(0);
+            data[1] = baseCon.getConnectionClass().getPrintName();
             data[2] = baseCon.getOpenMode().summaryString();
             data[3] = baseCon.getSummaryText();
             data[4] = baseCon.isOpen() ? "opened" : "closed";
@@ -409,9 +445,9 @@ public abstract class ConnectionFunctions {
 
         @Specialization
         @TruffleBoundary
-        protected Object open(RConnection con, String open, @SuppressWarnings("unused") boolean blocking) {
+        protected Object open(int con, String open, @SuppressWarnings("unused") boolean blocking) {
             try {
-                BaseRConnection baseConn = getBaseConnection(con);
+                BaseRConnection baseConn = getBaseConnection(RConnection.fromIndex(con));
                 if (baseConn.isClosed()) {
                     throw RError.error(this, RError.Message.INVALID_CONNECTION);
                 }
@@ -438,8 +474,8 @@ public abstract class ConnectionFunctions {
 
         @Specialization
         @TruffleBoundary
-        protected RLogicalVector isOpen(RConnection con, int rw) {
-            BaseRConnection baseCon = getBaseConnection(con);
+        protected RLogicalVector isOpen(int con, int rw) {
+            BaseRConnection baseCon = getBaseConnection(RConnection.fromIndex(con));
             boolean result = baseCon.isOpen();
             switch (rw) {
                 case 0:
@@ -468,34 +504,19 @@ public abstract class ConnectionFunctions {
 
         @Specialization
         @TruffleBoundary
-        protected Object close(RConnection con, @SuppressWarnings("unused") String type) {
+        protected Object close(int con, @SuppressWarnings("unused") String type) {
+            BaseRConnection connection = RConnection.fromIndex(con);
             try {
-                con.closeAndDestroy();
+                connection.closeAndDestroy();
             } catch (IOException ex) {
                 throw RError.error(this, RError.Message.GENERIC, ex.getMessage());
             }
             return RNull.instance;
         }
-
-    }
-
-    /**
-     * This is inherited by the {@code readXX/writeXXX} builtins that are required to "close" a
-     * connection that they opened. It does not destroy the connection.
-     */
-    private abstract static class InternalCloseHelper extends RBuiltinNode {
-        protected void internalClose(RConnection con) throws RError {
-            try {
-                BaseRConnection baseConn = getBaseConnection(con);
-                baseConn.close();
-            } catch (IOException ex) {
-                throw RError.error(this, RError.Message.GENERIC, ex.getMessage());
-            }
-        }
     }
 
     @RBuiltin(name = "readLines", kind = INTERNAL, parameterNames = {"con", "n", "ok", "warn", "encoding", "skipNul"}, behavior = IO)
-    public abstract static class ReadLines extends InternalCloseHelper {
+    public abstract static class ReadLines extends RBuiltinNode {
 
         @Override
         protected void createCasts(CastBuilder casts) {
@@ -509,9 +530,9 @@ public abstract class ConnectionFunctions {
 
         @Specialization
         @TruffleBoundary
-        protected Object readLines(RConnection con, int n, boolean ok, boolean warn, @SuppressWarnings("unused") String encoding, boolean skipNul) {
+        protected Object readLines(int con, int n, boolean ok, boolean warn, @SuppressWarnings("unused") String encoding, boolean skipNul) {
             // TODO implement all the arguments
-            try (RConnection openConn = con.forceOpen("rt")) {
+            try (RConnection openConn = RConnection.fromIndex(con).forceOpen("rt")) {
                 String[] lines = openConn.readLines(n, warn, skipNul);
                 if (n > 0 && lines.length < n && !ok) {
                     throw RError.error(this, RError.Message.TOO_FEW_LINES_READ_LINES);
@@ -525,7 +546,7 @@ public abstract class ConnectionFunctions {
     }
 
     @RBuiltin(name = "writeLines", visibility = OFF, kind = INTERNAL, parameterNames = {"text", "con", "sep", "useBytes"}, behavior = IO)
-    public abstract static class WriteLines extends InternalCloseHelper {
+    public abstract static class WriteLines extends RBuiltinNode {
         @Override
         protected void createCasts(CastBuilder casts) {
             casts.arg("text").asStringVector().mustBe(instanceOf(RAbstractStringVector.class));
@@ -536,8 +557,8 @@ public abstract class ConnectionFunctions {
 
         @Specialization
         @TruffleBoundary
-        protected RNull writeLines(RAbstractStringVector text, RConnection con, String sep, boolean useBytes) {
-            try (RConnection openConn = con.forceOpen("wt")) {
+        protected RNull writeLines(RAbstractStringVector text, int con, String sep, boolean useBytes) {
+            try (RConnection openConn = RConnection.fromIndex(con).forceOpen("wt")) {
                 openConn.writeLines(text, sep, useBytes);
             } catch (IOException x) {
                 throw RError.error(this, RError.Message.ERROR_WRITING_CONNECTION, x.getMessage());
@@ -556,9 +577,9 @@ public abstract class ConnectionFunctions {
 
         @Specialization
         @TruffleBoundary
-        protected RNull flush(RConnection con) {
+        protected RNull flush(int con) {
             try {
-                con.flush();
+                RConnection.fromIndex(con).flush();
             } catch (IOException x) {
                 throw RError.error(this, RError.Message.ERROR_FLUSHING_CONNECTION, x.getMessage());
             }
@@ -579,8 +600,8 @@ public abstract class ConnectionFunctions {
 
         @Specialization
         @TruffleBoundary
-        protected Object pushBack(RAbstractStringVector data, RConnection connection, boolean newLine, @SuppressWarnings("unused") int type) {
-            connection.pushBack(data, newLine);
+        protected Object pushBack(RAbstractStringVector data, int connection, boolean newLine, @SuppressWarnings("unused") int type) {
+            RConnection.fromIndex(connection).pushBack(data, newLine);
             return RNull.instance;
         }
 
@@ -594,8 +615,8 @@ public abstract class ConnectionFunctions {
         }
 
         @Specialization
-        protected int pushBackLength(RConnection connection) {
-            return connection.pushBackLength();
+        protected int pushBackLength(int connection) {
+            return RConnection.fromIndex(connection).pushBackLength();
         }
 
     }
@@ -609,15 +630,15 @@ public abstract class ConnectionFunctions {
         }
 
         @Specialization
-        protected RNull pushBackClear(RConnection connection) {
-            connection.pushBackClear();
+        protected RNull pushBackClear(int connection) {
+            RConnection.fromIndex(connection).pushBackClear();
             return RNull.instance;
         }
 
     }
 
     @RBuiltin(name = "readChar", kind = INTERNAL, parameterNames = {"con", "nchars", "useBytes"}, behavior = IO)
-    public abstract static class ReadChar extends InternalCloseHelper {
+    public abstract static class ReadChar extends RBuiltinNode {
 
         @Override
         protected void createCasts(CastBuilder casts) {
@@ -628,14 +649,14 @@ public abstract class ConnectionFunctions {
 
         @SuppressWarnings("unused")
         @Specialization(guards = "ncharsEmpty(nchars)")
-        protected RStringVector readCharNcharsEmpty(RConnection con, RAbstractIntVector nchars, boolean useBytes) {
+        protected RStringVector readCharNcharsEmpty(int con, RAbstractIntVector nchars, boolean useBytes) {
             return RDataFactory.createEmptyStringVector();
         }
 
         @Specialization(guards = "!ncharsEmpty(nchars)")
         @TruffleBoundary
-        protected RStringVector readChar(RConnection con, RAbstractIntVector nchars, boolean useBytes) {
-            try (RConnection openConn = con.forceOpen("rb")) {
+        protected RStringVector readChar(int con, RAbstractIntVector nchars, boolean useBytes) {
+            try (RConnection openConn = RConnection.fromIndex(con).forceOpen("rb")) {
                 String[] data = new String[nchars.getLength()];
                 for (int i = 0; i < data.length; i++) {
                     data[i] = openConn.readChar(nchars.getDataAt(i), useBytes);
@@ -653,11 +674,12 @@ public abstract class ConnectionFunctions {
     }
 
     @RBuiltin(name = "writeChar", visibility = OFF, kind = INTERNAL, parameterNames = {"object", "con", "nchars", "sep", "useBytes"}, behavior = IO)
-    public abstract static class WriteChar extends InternalCloseHelper {
+    public abstract static class WriteChar extends RBuiltinNode {
         @Override
         protected void createCasts(CastBuilder casts) {
             casts.arg("object").asStringVector();
-            casts.arg("con").mustBe(instanceOf(RConnection.class).or(instanceOf(RAbstractRawVector.class)));
+            casts.arg("con").defaultError(Message.INVALID_CONNECTION).mustNotBeNull().mustBe(integerValue().or(rawValue())).mapIf(integerValue(),
+                            asIntegerVector().setNext(findFirst().integerElement()));
             Casts.nchars(casts);
             casts.arg("sep").allowNull().mustBe(stringValue());
             Casts.useBytes(casts);
@@ -665,8 +687,8 @@ public abstract class ConnectionFunctions {
 
         @TruffleBoundary
         @Specialization
-        protected RNull writeChar(RAbstractStringVector object, RConnection con, RAbstractIntVector nchars, RAbstractStringVector sep, boolean useBytes) {
-            try (RConnection openConn = con.forceOpen("wb")) {
+        protected RNull writeChar(RAbstractStringVector object, int con, RAbstractIntVector nchars, RAbstractStringVector sep, boolean useBytes) {
+            try (RConnection openConn = RConnection.fromIndex(con).forceOpen("wb")) {
                 int length = object.getLength();
                 for (int i = 0; i < length; i++) {
                     String s = object.getDataAt(i);
@@ -686,7 +708,7 @@ public abstract class ConnectionFunctions {
         @SuppressWarnings("unused")
         @TruffleBoundary
         @Specialization
-        protected RNull writeChar(RAbstractStringVector object, RConnection con, RAbstractIntVector nchars, RNull sep, boolean useBytes) {
+        protected RNull writeChar(RAbstractStringVector object, int con, RAbstractIntVector nchars, RNull sep, boolean useBytes) {
             throw RError.nyi(this, "writeChar(sep=NULL)");
         }
     }
@@ -705,63 +727,56 @@ public abstract class ConnectionFunctions {
         return buffer.order(nb);
     }
 
-    private abstract static class BinRBuiltinNode extends InternalCloseHelper {
-        protected void n(CastBuilder casts) {
-            casts.arg("n").asIntegerVector().findFirst().mustBe(gte(0));
-        }
-
-        protected void size(CastBuilder casts) {
-            casts.arg("size").asIntegerVector().findFirst();
-        }
-
-        protected void swap(CastBuilder casts) {
-            casts.arg("swap").asLogicalVector().findFirst().notNA().map(toBoolean());
-        }
-    }
-
     @RBuiltin(name = "readBin", kind = INTERNAL, parameterNames = {"con", "what", "n", "size", "signed", "swap"}, behavior = IO)
-    public abstract static class ReadBin extends BinRBuiltinNode {
+    public abstract static class ReadBin extends RBuiltinNode {
 
         @Override
         protected void createCasts(CastBuilder casts) {
             // TODO con can be a RAWSXP (not implemented)
             Casts.connection(casts);
             casts.arg("what").asStringVector().findFirst();
-            n(casts);
-            size(casts);
+            Casts.n(casts);
+            Casts.size(casts);
             casts.arg("signed").asLogicalVector().findFirst().notNA().map(toBoolean());
-            swap(casts);
+            Casts.swap(casts);
         }
 
         @Specialization
         @TruffleBoundary
-        protected Object readBin(RConnection con, String what, int n, @SuppressWarnings("unused") int size, @SuppressWarnings("unused") boolean signed,
-                        boolean swap) {
+        protected Object readBin(int con, String what, int n, int size, boolean signed, boolean swap) {
             RVector<?> result = null;
-            try (RConnection openConn = con.forceOpen("rb")) {
+            BaseRConnection connection = RConnection.fromIndex(con);
+            try (RConnection openConn = connection.forceOpen("rb")) {
                 if (getBaseConnection(openConn).getOpenMode().isText()) {
                     throw RError.error(this, RError.Message.ONLY_READ_BINARY_CONNECTION);
                 }
                 switch (what) {
                     case "int":
                     case "integer":
-                        result = readInteger(con, n, swap);
+                        if (size == RRuntime.INT_NA) {
+                            size = 4;
+                        }
+                        if (size == 1 || size == 4) {
+                            result = readInteger(connection, n, size, swap, signed);
+                        } else {
+                            throw RError.nyi(this, "readBin \"int\" size not implemented");
+                        }
                         break;
                     case "double":
                     case "numeric":
-                        result = readDouble(con, n, swap);
+                        result = readDouble(connection, n, swap);
                         break;
                     case "complex":
-                        result = readComplex(con, n, swap);
+                        result = readComplex(connection, n, swap);
                         break;
                     case "character":
-                        result = readString(con, n);
+                        result = readString(connection, n);
                         break;
                     case "logical":
-                        result = readLogical(con, n, swap);
+                        result = readLogical(connection, n, swap);
                         break;
                     case "raw":
-                        result = readRaw(con, n);
+                        result = readRaw(connection, n);
                         break;
                     default:
                         throw RInternalError.shouldNotReachHere();
@@ -772,23 +787,32 @@ public abstract class ConnectionFunctions {
             return result;
         }
 
-        private static RIntVector readInteger(RConnection con, int n, boolean swap) throws IOException {
-            ByteBuffer buffer = ByteBuffer.allocate(n * 4);
+        private static RIntVector readInteger(RConnection con, int n, int size, boolean swap, boolean signed) throws IOException {
+            ByteBuffer buffer = ByteBuffer.allocate(n * size);
             int bytesRead = con.readBin(buffer);
             if (bytesRead == 0) {
                 return RDataFactory.createEmptyIntVector();
             }
             buffer.flip();
-            IntBuffer intBuffer = checkOrder(buffer, swap).asIntBuffer();
-            int nInts = bytesRead / 4;
+            checkOrder(buffer, swap);
+            int nInts = bytesRead / size;
             int[] data = new int[nInts];
             boolean complete = RDataFactory.COMPLETE_VECTOR;
-            for (int i = 0; i < nInts; i++) {
-                int d = intBuffer.get();
-                if (RRuntime.isNA(d)) {
-                    complete = RDataFactory.INCOMPLETE_VECTOR;
+            if (size == 4) {
+                IntBuffer intBuffer = buffer.asIntBuffer();
+                for (int i = 0; i < nInts; i++) {
+                    int d = intBuffer.get();
+                    if (RRuntime.isNA(d)) {
+                        complete = RDataFactory.INCOMPLETE_VECTOR;
+                    }
+                    data[i] = d;
                 }
-                data[i] = d;
+            } else if (size == 1) {
+                for (int i = 0; i < nInts; i++) {
+                    byte b = buffer.get();
+                    int d = signed ? b : b & 0xFF;
+                    data[i] = d;
+                }
             }
             return RDataFactory.createIntVector(data, complete);
         }
@@ -991,33 +1015,34 @@ public abstract class ConnectionFunctions {
     }
 
     @RBuiltin(name = "writeBin", visibility = OFF, kind = INTERNAL, parameterNames = {"object", "con", "size", "swap", "useBytes"}, behavior = IO)
-    public abstract static class WriteBin extends BinRBuiltinNode {
+    public abstract static class WriteBin extends RBuiltinNode {
 
         @Override
         protected void createCasts(CastBuilder casts) {
             // TODO atomic, i.e. not RList or RExpression
             casts.arg("object").asVector().mustBe(instanceOf(RAbstractVector.class));
-            Casts.connection(casts);
-            size(casts);
-            swap(casts);
+            casts.arg("con").defaultError(Message.INVALID_CONNECTION).mustBe(integerValue().or(rawValue())).mapIf(integerValue(), asIntegerVector().setNext(findFirst().integerElement()));
+            Casts.size(casts);
+            Casts.swap(casts);
             Casts.useBytes(casts);
         }
 
         @TruffleBoundary
         @Specialization
-        protected Object writeBin(RAbstractVector object, RConnection con, int size, boolean swap, boolean useBytes, //
+        protected Object writeBin(RAbstractVector object, int con, int size, boolean swap, boolean useBytes,
                         @Cached("create()") WriteDataNode writeData) {
             if (object instanceof RList || object instanceof RExpression) {
                 throw RError.error(this, RError.Message.INVALID_ARGUMENT, "object");
             }
             if (object.getLength() > 0) {
-                try (RConnection openConn = con.forceOpen("wb")) {
+                RConnection connection = RConnection.fromIndex(con);
+                try (RConnection openConn = connection.forceOpen("wb")) {
                     if (getBaseConnection(openConn).isTextMode()) {
                         throw RError.error(this, RError.Message.ONLY_WRITE_BINARY_CONNECTION);
                     }
                     ByteBuffer buffer = writeData.execute(object, size, swap, useBytes);
                     buffer.flip();
-                    con.writeBin(buffer);
+                    connection.writeBin(buffer);
                 } catch (IOException x) {
                     throw RError.error(this, RError.Message.ERROR_WRITING_CONNECTION, x.getMessage());
                 }
@@ -1026,7 +1051,7 @@ public abstract class ConnectionFunctions {
         }
 
         @Specialization
-        protected RRawVector writeBin(RAbstractVector object, @SuppressWarnings("unused") RAbstractRawVector con, int size, byte swapArg, byte useBytesArg, //
+        protected RRawVector writeBin(RAbstractVector object, @SuppressWarnings("unused") RAbstractRawVector con, int size, byte swapArg, byte useBytesArg,
                         @Cached("create()") WriteDataNode writeData) {
             boolean swap = RRuntime.fromLogical(swapArg);
             boolean useBytes = RRuntime.fromLogical(useBytesArg);
@@ -1046,12 +1071,12 @@ public abstract class ConnectionFunctions {
 
         @Specialization
         @TruffleBoundary
-        protected RConnection getConnection(int what) {
-            BaseRConnection con = RContext.getInstance().stateRConnection.getConnection(what);
+        protected RAbstractIntVector getConnection(int what) {
+            BaseRConnection con = RContext.getInstance().stateRConnection.getConnection(what, false);
             if (con == null) {
                 throw RError.error(this, RError.Message.NO_SUCH_CONNECTION, what);
             } else {
-                return con;
+                return con.asVector();
             }
         }
     }
@@ -1060,7 +1085,7 @@ public abstract class ConnectionFunctions {
     public abstract static class GetAllConnections extends RBuiltinNode {
         @Specialization
         @TruffleBoundary
-        protected RIntVector getAllConnections() {
+        protected RAbstractIntVector getAllConnections() {
             return RContext.getInstance().stateRConnection.getAllConnections();
         }
     }
@@ -1070,13 +1095,12 @@ public abstract class ConnectionFunctions {
         @Override
         protected void createCasts(CastBuilder casts) {
             Casts.connection(casts);
-
         }
 
         @Specialization
         @TruffleBoundary
-        protected byte isSeekable(RConnection con) {
-            return RRuntime.asLogical(con.isSeekable());
+        protected byte isSeekable(int con) {
+            return RRuntime.asLogical(RConnection.fromIndex(con).isSeekable());
         }
     }
 
@@ -1092,10 +1116,23 @@ public abstract class ConnectionFunctions {
 
         @Specialization
         @TruffleBoundary
-        protected long seek(RConnection con, double where, int origin, int rw) {
-            long offset = (long) where;
+        protected int seek(int con, double where, int origin, int rw) {
+            /*
+             * N.B. 0,1,2 are valid values for "rw"; 1,2,3 are valid values for "origin". We use 0
+             * for the NA (enquiry) case.
+             */
+            long offset = 0;
+            if (RRuntime.isNAorNaN(where)) {
+                origin = 0;
+            } else {
+                offset = (long) where;
+            }
             try {
-                return con.seek(offset, RConnection.SeekMode.values()[origin], RConnection.SeekRWMode.values()[rw]);
+                long newOffset = RConnection.fromIndex(con).seek(offset, RConnection.SeekMode.values()[origin], RConnection.SeekRWMode.values()[rw]);
+                if (newOffset > Integer.MAX_VALUE) {
+                    throw RError.nyi(this, "seek > Integer.MAX_VALUE");
+                }
+                return (int) newOffset;
             } catch (IOException x) {
                 throw RError.error(this, RError.Message.GENERIC, x.getMessage());
             }

@@ -37,11 +37,13 @@ import com.oracle.truffle.r.runtime.FastROptions;
 import com.oracle.truffle.r.runtime.RCaller;
 import com.oracle.truffle.r.runtime.RInternalError;
 import com.oracle.truffle.r.runtime.RRuntime;
+import com.oracle.truffle.r.runtime.Utils;
 import com.oracle.truffle.r.runtime.builtins.RBuiltinDescriptor;
 import com.oracle.truffle.r.runtime.data.RPromise.Closure;
 import com.oracle.truffle.r.runtime.data.RPromise.EagerFeedback;
 import com.oracle.truffle.r.runtime.data.RPromise.PromiseState;
 import com.oracle.truffle.r.runtime.env.REnvironment;
+import com.oracle.truffle.r.runtime.ffi.DLL.SymbolHandle;
 import com.oracle.truffle.r.runtime.gnur.SEXPTYPE;
 import com.oracle.truffle.r.runtime.nodes.RBaseNode;
 
@@ -138,7 +140,7 @@ public final class RDataFactory {
                 data[i + 1] = RRuntime.COMPLEX_NA_IMAGINARY_PART;
             }
         }
-        return createComplexVector(data, false, null, null);
+        return createComplexVector(data, !fillNA, null, null);
     }
 
     public static RComplexVector createComplexVector(double[] data, boolean complete) {
@@ -393,7 +395,7 @@ public final class RDataFactory {
     }
 
     public static RSymbol createSymbol(String name) {
-        assert name == name.intern();
+        assert Utils.isInterned(name);
         return traceDataCreated(new RSymbol(name));
     }
 
@@ -466,8 +468,8 @@ public final class RDataFactory {
         return traceDataCreated(new RPairList(car, cdr, tag, type));
     }
 
-    public static RFunction createFunction(String name, RootCallTarget target, RBuiltinDescriptor builtin, MaterializedFrame enclosingFrame) {
-        return traceDataCreated(new RFunction(name, target, builtin, enclosingFrame));
+    public static RFunction createFunction(String name, String packageName, RootCallTarget target, RBuiltinDescriptor builtin, MaterializedFrame enclosingFrame) {
+        return traceDataCreated(new RFunction(name, packageName, target, builtin, enclosingFrame));
     }
 
     private static final AtomicInteger environmentCount = new AtomicInteger();
@@ -494,12 +496,21 @@ public final class RDataFactory {
         return traceDataCreated(new RS4Object());
     }
 
-    public static RExternalPtr createExternalPtr(long value, Object tag, Object prot) {
-        return traceDataCreated(new RExternalPtr(value, tag, prot));
+    public static RExternalPtr createExternalPtr(SymbolHandle value, Object externalObject, Object tag, Object prot) {
+        assert tag != null : "null tag, use RNull.instance instead";
+        assert prot != null : "null prot, use RNull.instance instead";
+        return traceDataCreated(new RExternalPtr(value, externalObject, tag, prot));
     }
 
-    public static RExternalPtr createExternalPtr(long value, Object tag) {
-        return traceDataCreated(new RExternalPtr(value, tag, RNull.instance));
+    public static RExternalPtr createExternalPtr(SymbolHandle value, Object tag, Object prot) {
+        assert tag != null : "null tag, use RNull.instance instead";
+        assert prot != null : "null prot, use RNull.instance instead";
+        return traceDataCreated(new RExternalPtr(value, null, tag, prot));
+    }
+
+    public static RExternalPtr createExternalPtr(SymbolHandle value, Object tag) {
+        assert tag != null : "null tag, use RNull.instance instead";
+        return traceDataCreated(new RExternalPtr(value, null, tag, RNull.instance));
     }
 
     /*

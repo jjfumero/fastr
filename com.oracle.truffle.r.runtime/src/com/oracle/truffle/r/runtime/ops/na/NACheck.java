@@ -193,11 +193,7 @@ public final class NACheck {
     }
 
     public RComplex convertDoubleToComplex(double value) {
-        if (checkNAorNaN(value)) {
-            // Special case here NaN does not enable the NA check.
-            this.enable(true);
-            // Note: GnuR seems to convert NaN to NaN + 0i and NA to NA, but doing it here breaks
-            // other things
+        if (check(value)) {
             return RRuntime.createComplexNA();
         }
         return RDataFactory.createComplex(value, 0);
@@ -354,9 +350,9 @@ public final class NACheck {
                 }
                 result[i] = intValue;
             }
-            if (warning) {
-                RError.warning(RError.SHOW_CALLER2, RError.Message.NA_INTRODUCED_COERCION);
-            }
+        }
+        if (warning) {
+            RError.warning(RError.SHOW_CALLER2, RError.Message.NA_INTRODUCED_COERCION_INT);
         }
         return result;
     }

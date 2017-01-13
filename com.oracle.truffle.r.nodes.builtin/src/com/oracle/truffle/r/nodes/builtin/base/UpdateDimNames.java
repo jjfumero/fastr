@@ -22,16 +22,16 @@
  */
 package com.oracle.truffle.r.nodes.builtin.base;
 
+import static com.oracle.truffle.r.runtime.RDispatch.INTERNAL_GENERIC;
 import static com.oracle.truffle.r.runtime.builtins.RBehavior.PURE;
 import static com.oracle.truffle.r.runtime.builtins.RBuiltinKind.PRIMITIVE;
-import static com.oracle.truffle.r.runtime.RDispatch.INTERNAL_GENERIC;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.profiles.ConditionProfile;
-import com.oracle.truffle.r.nodes.attributes.PutAttributeNode;
-import com.oracle.truffle.r.nodes.attributes.RemoveAttributeNode;
+import com.oracle.truffle.r.nodes.attributes.RemoveFixedAttributeNode;
+import com.oracle.truffle.r.nodes.attributes.SpecialAttributesFunctions.SetDimNamesAttributeNode;
 import com.oracle.truffle.r.nodes.builtin.RBuiltinNode;
 import com.oracle.truffle.r.nodes.unary.CastStringNode;
 import com.oracle.truffle.r.nodes.unary.CastStringNodeGen;
@@ -40,11 +40,8 @@ import com.oracle.truffle.r.nodes.unary.CastToVectorNodeGen;
 import com.oracle.truffle.r.runtime.RError;
 import com.oracle.truffle.r.runtime.RRuntime;
 import com.oracle.truffle.r.runtime.builtins.RBuiltin;
-import com.oracle.truffle.r.runtime.data.RAttributes;
 import com.oracle.truffle.r.runtime.data.RList;
 import com.oracle.truffle.r.runtime.data.RNull;
-import com.oracle.truffle.r.runtime.data.RStringVector;
-import com.oracle.truffle.r.runtime.data.RVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractContainer;
 import com.oracle.truffle.r.runtime.data.model.RAbstractVector;
 
@@ -54,7 +51,6 @@ public abstract class UpdateDimNames extends RBuiltinNode {
     protected static final String DIMNAMES_ATTR_KEY = RRuntime.DIMNAMES_ATTR_KEY;
 
     private final ConditionProfile shareListProfile = ConditionProfile.createBinaryProfile();
-    private final ConditionProfile isRVectorProfile = ConditionProfile.createBinaryProfile();
 
     @Child private CastStringNode castStringNode;
     @Child private CastToVectorNode castVectorNode;
@@ -94,31 +90,23 @@ public abstract class UpdateDimNames extends RBuiltinNode {
 
     @Specialization
     protected RAbstractContainer updateDimnamesNull(RAbstractContainer container, @SuppressWarnings("unused") RNull list, //
-                    @Cached("create(DIMNAMES_ATTR_KEY)") RemoveAttributeNode remove) {
+                    @Cached("createDimNames()") RemoveFixedAttributeNode remove) {
         RAbstractContainer result = (RAbstractContainer) container.getNonShared();
-        if (isRVectorProfile.profile(container instanceof RVector)) {
-            RVector<?> vector = (RVector<?>) result;
-            if (vector.getInternalDimNames() != null) {
-                vector.setInternalDimNames(null);
-                remove.execute(vector.getAttributes());
-            }
-        } else {
-            result.setDimNames(null);
-        }
+        remove.execute(result);
         return result;
     }
 
     @Specialization(guards = "list.getLength() == 0")
     protected RAbstractContainer updateDimnamesEmpty(RAbstractContainer container, @SuppressWarnings("unused") RList list, //
-                    @Cached("create(DIMNAMES_ATTR_KEY)") RemoveAttributeNode remove) {
+                    @Cached("createDimNames()") RemoveFixedAttributeNode remove) {
         return updateDimnamesNull(container, RNull.instance, remove);
     }
 
     @Specialization(guards = "list.getLength() > 0")
     protected RAbstractContainer updateDimnames(RAbstractContainer container, RList list, //
-                    @Cached("create(DIMNAMES_ATTR_KEY)") PutAttributeNode put) {
+                    @Cached("create()") SetDimNamesAttributeNode setDimNamesNode) {
         RAbstractContainer result = (RAbstractContainer) container.getNonShared();
-        setDimNames(result, convertToListOfStrings(list), put);
+        setDimNamesNode.setDimNames(result, convertToListOfStrings(list));
         return result;
     }
 
@@ -128,58 +116,4 @@ public abstract class UpdateDimNames extends RBuiltinNode {
         throw RError.error(this, RError.Message.DIMNAMES_LIST);
     }
 
-    private void setDimNames(RAbstractContainer container, RList newDimNames, PutAttributeNode put) {
-        assert newDimNames != null;
-        if (isRVectorProfile.profile(container instanceof RVector)) {
-            RVector<?> vector = (RVector<?>) container;
-            int[] dimensions = vector.getDimensions();
-            if (dimensions == null) {
-                CompilerDirectives.transferToInterpreter();
-                throw RError.error(this, RError.Message.DIMNAMES_NONARRAY);
-            }
-            int newDimNamesLength = newDimNames.getLength();
-            if (newDimNamesLength > dimensions.length) {
-                CompilerDirectives.transferToInterpreter();
-                throw RError.error(this, RError.Message.DIMNAMES_DONT_MATCH_DIMS, newDimNamesLength, dimensions.length);
-            }
-            for (int i = 0; i < newDimNamesLength; i++) {
-                Object dimObject = newDimNames.getDataAt(i);
-                if (dimObject != RNull.instance) {
-                    if (dimObject instanceof String) {
-                        if (dimensions[i] != 1) {
-                            CompilerDirectives.transferToInterpreter();
-                            throw RError.error(this, RError.Message.DIMNAMES_DONT_MATCH_EXTENT, i + 1);
-                        }
-                    } else {
-                        RStringVector dimVector = (RStringVector) dimObject;
-                        if (dimVector == null || dimVector.getLength() == 0) {
-                            newDimNames.updateDataAt(i, RNull.instance, null);
-                        } else if (dimVector.getLength() != dimensions[i]) {
-                            CompilerDirectives.transferToInterpreter();
-                            throw RError.error(this, RError.Message.DIMNAMES_DONT_MATCH_EXTENT, i + 1);
-                        }
-                    }
-                }
-            }
-
-            RList resDimNames = newDimNames;
-            if (newDimNamesLength < dimensions.length) {
-                // resize the array and fill the missing entries with NULL-s
-                resDimNames = (RList) resDimNames.copyResized(dimensions.length, true);
-                resDimNames.setAttributes(newDimNames);
-                for (int i = newDimNamesLength; i < dimensions.length; i++) {
-                    resDimNames.updateDataAt(i, RNull.instance, null);
-                }
-            }
-            if (vector.getAttributes() == null) {
-                vector.initAttributes(RAttributes.createInitialized(new String[]{RRuntime.DIMNAMES_ATTR_KEY}, new Object[]{resDimNames}));
-            } else {
-                put.execute(vector.getAttributes(), resDimNames);
-            }
-            resDimNames.elementNamePrefix = RRuntime.DIMNAMES_LIST_ELEMENT_NAME_PREFIX;
-            vector.setInternalDimNames(resDimNames);
-        } else {
-            container.setDimNames(newDimNames);
-        }
-    }
 }

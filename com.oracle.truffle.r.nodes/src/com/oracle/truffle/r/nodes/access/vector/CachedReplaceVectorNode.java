@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -34,11 +34,14 @@ import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.NodeInfo;
+import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 import com.oracle.truffle.api.profiles.ValueProfile;
 import com.oracle.truffle.r.nodes.access.vector.CachedReplaceVectorNodeFactory.ValueProfileNodeGen;
 import com.oracle.truffle.r.nodes.access.vector.PositionsCheckNode.PositionProfile;
+import com.oracle.truffle.r.nodes.attributes.SpecialAttributesFunctions.GetNamesAttributeNode;
+import com.oracle.truffle.r.nodes.attributes.SpecialAttributesFunctions.SetNamesAttributeNode;
 import com.oracle.truffle.r.nodes.binary.CastTypeNode;
 import com.oracle.truffle.r.nodes.profile.VectorLengthProfile;
 import com.oracle.truffle.r.nodes.unary.CastListNodeGen;
@@ -47,8 +50,7 @@ import com.oracle.truffle.r.runtime.RError;
 import com.oracle.truffle.r.runtime.RError.Message;
 import com.oracle.truffle.r.runtime.RType;
 import com.oracle.truffle.r.runtime.context.RContext;
-import com.oracle.truffle.r.runtime.data.RAttributeProfiles;
-import com.oracle.truffle.r.runtime.data.RAttributes;
+import com.oracle.truffle.r.runtime.data.RAttributesLayout;
 import com.oracle.truffle.r.runtime.data.RDataFactory;
 import com.oracle.truffle.r.runtime.data.RLanguage;
 import com.oracle.truffle.r.runtime.data.RList;
@@ -65,7 +67,7 @@ import com.oracle.truffle.r.runtime.data.model.RAbstractStringVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractVector;
 import com.oracle.truffle.r.runtime.env.REnvironment;
 import com.oracle.truffle.r.runtime.env.REnvironment.PutException;
-import com.oracle.truffle.r.runtime.nodes.RNode;
+import com.oracle.truffle.r.runtime.nodes.RBaseNode;
 
 final class CachedReplaceVectorNode extends CachedVectorNode {
 
@@ -77,8 +79,6 @@ final class CachedReplaceVectorNode extends CachedVectorNode {
     private final VectorLengthProfile targetLengthProfile = VectorLengthProfile.create();
     private final VectorLengthProfile valueLengthProfile = VectorLengthProfile.create();
     private final BranchProfile warningBranch = BranchProfile.create();
-    private final RAttributeProfiles vectorNamesProfile = RAttributeProfiles.create();
-    private final RAttributeProfiles positionNamesProfile = RAttributeProfiles.create();
     private final ConditionProfile valueIsNA = ConditionProfile.createBinaryProfile();
     private final BranchProfile resizeProfile = BranchProfile.create();
     private final BranchProfile sharedProfile = BranchProfile.create();
@@ -87,6 +87,8 @@ final class CachedReplaceVectorNode extends CachedVectorNode {
     private final ConditionProfile valueLengthOneProfile = ConditionProfile.createBinaryProfile();
     private final ConditionProfile emptyReplacementProfile = ConditionProfile.createBinaryProfile();
     private final ConditionProfile completeVectorProfile = ConditionProfile.createBinaryProfile();
+
+    private final ValueProfile vectorTypeProfile = ValueProfile.createClassProfile();
 
     private final RType valueType;
     private final RType castType;
@@ -97,6 +99,7 @@ final class CachedReplaceVectorNode extends CachedVectorNode {
     @Child private CastNode castVectorNode;
     @Child private CachedReplaceVectorNode copyPositionNames;
     @Child private DeleteElementsNode deleteElementsNode;
+    @Child private SetNamesAttributeNode setNamesNode;
 
     CachedReplaceVectorNode(ElementAccessMode mode, RTypedValue vector, Object[] positions, RTypedValue value, boolean updatePositionNames, boolean recursive) {
         super(mode, vector, positions, recursive);
@@ -193,9 +196,9 @@ final class CachedReplaceVectorNode extends CachedVectorNode {
             case Language:
                 repType = RContext.getRRuntimeASTAccess().getRepType((RLanguage) castVector);
                 vector = RContext.getRRuntimeASTAccess().asList((RLanguage) castVector);
-                RAttributes attrs = ((RLanguage) castVector).getAttributes();
+                DynamicObject attrs = ((RLanguage) castVector).getAttributes();
                 if (rlanguageAttributesProfile.profile(attrs != null && !attrs.isEmpty())) {
-                    vector.initAttributes(attrs.copy());
+                    vector.initAttributes(RAttributesLayout.copy(attrs));
                 }
                 break;
             default:
@@ -262,6 +265,7 @@ final class CachedReplaceVectorNode extends CachedVectorNode {
         // resizing/materializing 'vector', it will be marked as 'temporary' and its refCount
         // incremented during the assignment step.
 
+        vector = vectorTypeProfile.profile(vector);
         vectorLength = targetLengthProfile.profile(vector.getLength());
 
         if (mode.isSubset()) {
@@ -292,7 +296,7 @@ final class CachedReplaceVectorNode extends CachedVectorNode {
             }
         }
 
-        RNode.reportWork(this, replacementLength);
+        RBaseNode.reportWork(this, replacementLength);
 
         if (isDeleteElements()) {
             assert deleteElementsNode != null;
@@ -434,6 +438,8 @@ final class CachedReplaceVectorNode extends CachedVectorNode {
     }
 
     private final ValueProfile positionCastProfile = ValueProfile.createClassProfile();
+    @Child private GetNamesAttributeNode getNamesNode;
+    @Child private GetNamesAttributeNode getResultNamesNode;
 
     private void updateVectorWithPositionNames(RAbstractVector vector, Object[] positions) {
         Object position = positionCastProfile.profile(positions[0]);
@@ -442,7 +448,11 @@ final class CachedReplaceVectorNode extends CachedVectorNode {
         if (position instanceof RMissing) {
             positionNames = null;
         } else {
-            positionNames = ((RAbstractVector) position).getNames(positionNamesProfile);
+            if (getNamesNode == null) {
+                CompilerDirectives.transferToInterpreterAndInvalidate();
+                getNamesNode = insert(GetNamesAttributeNode.create());
+            }
+            positionNames = getNamesNode.getNames(position);
         }
         if (positionNames != null && positionNames.getLength() > 0) {
             updatePositionNames(vector, positionNames, positions);
@@ -530,10 +540,10 @@ final class CachedReplaceVectorNode extends CachedVectorNode {
     // its not yet worth compiling it we need a better attribute system
     @TruffleBoundary
     private RVector<?> resizeVector(RAbstractVector vector, int size) {
-        RStringVector oldNames = vector.getNames(vectorNamesProfile);
+        RStringVector oldNames = vector.getNames();
         RVector<?> res = vector.copyResized(size, true).materialize();
         if (vector instanceof RVector) {
-            res.copyAttributesFrom(positionNamesProfile, vector);
+            res.copyAttributesFrom(vector);
         }
         res.setDimensionsNoCheck(null);
         res.setDimNamesNoCheck(null);
@@ -547,7 +557,11 @@ final class CachedReplaceVectorNode extends CachedVectorNode {
     private final ConditionProfile updateNamesProfile = ConditionProfile.createBinaryProfile();
 
     private void updatePositionNames(RAbstractVector resultVector, RAbstractStringVector positionNames, Object[] positions) {
-        RTypedValue originalNames = resultVector.getNames(positionNamesProfile);
+        if (getResultNamesNode == null) {
+            CompilerDirectives.transferToInterpreterAndInvalidate();
+            getResultNamesNode = insert(GetNamesAttributeNode.create());
+        }
+        RTypedValue originalNames = getResultNamesNode.getNames(resultVector);
         RTypedValue names = originalNames;
         if (names == null) {
             String[] emptyVector = new String[resultVector.getLength()];
@@ -561,7 +575,11 @@ final class CachedReplaceVectorNode extends CachedVectorNode {
         assert copyPositionNames.isSupported(names, positions, positionNames);
         RAbstractStringVector newNames = (RAbstractStringVector) copyPositionNames.apply(names, positions, positionNames);
         if (updateNamesProfile.profile(newNames != originalNames)) {
-            resultVector.setNames(newNames.materialize());
+            if (setNamesNode == null) {
+                CompilerDirectives.transferToInterpreterAndInvalidate();
+                setNamesNode = insert(SetNamesAttributeNode.create());
+            }
+            setNamesNode.setNames(resultVector, newNames.materialize());
         }
     }
 
@@ -576,7 +594,7 @@ final class CachedReplaceVectorNode extends CachedVectorNode {
          */
         @CompilationFinal private int previousResultLength = PREVIOUS_RESULT_UNINITIALIZED;
 
-        private final RAttributeProfiles vectorNamesProfile = RAttributeProfiles.create();
+        @Child private GetNamesAttributeNode getNamesNode = GetNamesAttributeNode.create();
 
         public RAbstractVector deleteElements(RAbstractVector vector, int vectorLength) {
             // we can speculate here that we delete always the same number of elements
@@ -592,7 +610,7 @@ final class CachedReplaceVectorNode extends CachedVectorNode {
             }
 
             Object[] data = new Object[resultLength];
-            RStringVector names = vector.getNames(vectorNamesProfile);
+            RStringVector names = getNamesNode.getNames(vector);
             boolean hasNames = names != null;
             String[] newNames = null;
             if (hasNames) {

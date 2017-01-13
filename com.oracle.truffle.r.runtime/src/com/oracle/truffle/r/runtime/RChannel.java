@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,33 +23,32 @@
 package com.oracle.truffle.r.runtime;
 
 import java.io.IOException;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Semaphore;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.frame.MaterializedFrame;
-import com.oracle.truffle.api.source.Source;
+import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.r.runtime.conn.RConnection;
 import com.oracle.truffle.r.runtime.context.RContext;
 import com.oracle.truffle.r.runtime.data.RAttributable;
 import com.oracle.truffle.r.runtime.data.RAttributeStorage;
-import com.oracle.truffle.r.runtime.data.RAttributes;
-import com.oracle.truffle.r.runtime.data.RAttributes.RAttribute;
+import com.oracle.truffle.r.runtime.data.RAttributesLayout;
 import com.oracle.truffle.r.runtime.data.RDataFactory;
-import com.oracle.truffle.r.runtime.data.RExpression;
 import com.oracle.truffle.r.runtime.data.RFunction;
 import com.oracle.truffle.r.runtime.data.RLanguage;
 import com.oracle.truffle.r.runtime.data.RList;
 import com.oracle.truffle.r.runtime.data.RNull;
-import com.oracle.truffle.r.runtime.data.RPairList;
 import com.oracle.truffle.r.runtime.data.RPromise;
+import com.oracle.truffle.r.runtime.data.RPromise.Closure;
+import com.oracle.truffle.r.runtime.data.RPromise.PromiseState;
 import com.oracle.truffle.r.runtime.data.RShareable;
 import com.oracle.truffle.r.runtime.data.RUnboundValue;
 import com.oracle.truffle.r.runtime.env.REnvironment;
+import com.oracle.truffle.r.runtime.env.frame.FrameSlotChangeMonitor;
 import com.oracle.truffle.r.runtime.env.frame.REnvTruffleFrameAccess;
-import com.oracle.truffle.r.runtime.gnur.SEXPTYPE;
+import com.oracle.truffle.r.runtime.nodes.RSyntaxElement;
 
 /**
  * Implementation of a channel abstraction used for communication between parallel contexts in
@@ -240,12 +239,12 @@ public class RChannel {
                 }
             }
 
-            private Bindings bindings;
+            private final Bindings bindings;
             // parent can be SerializedEnv or byte[]
-            private Object parent;
-            private RAttributes attributes;
+            private final Object parent;
+            private final DynamicObject attributes;
 
-            SerializedEnv(Bindings bindings, Object parent, RAttributes attributes) {
+            SerializedEnv(Bindings bindings, Object parent, DynamicObject attributes) {
                 this.bindings = bindings;
                 this.parent = parent;
                 this.attributes = attributes;
@@ -263,7 +262,7 @@ public class RChannel {
                 return parent;
             }
 
-            public RAttributes getAttributes() {
+            public DynamicObject getAttributes() {
                 return attributes;
             }
         }
@@ -272,9 +271,9 @@ public class RChannel {
 
             private final Object env;
             private final Object value;
-            private final byte[] serializedExpr;
+            private final RSyntaxElement serializedExpr;
 
-            public SerializedPromise(Object env, Object value, byte[] serializedExpr) {
+            public SerializedPromise(Object env, Object value, RSyntaxElement serializedExpr) {
                 this.env = env;
                 this.value = value;
                 this.serializedExpr = serializedExpr;
@@ -288,24 +287,24 @@ public class RChannel {
                 return value;
             }
 
-            public byte[] getSerializedExpr() {
+            public RSyntaxElement getSerializedExpr() {
                 return serializedExpr;
             }
 
         }
 
         protected static class SerializedFunction {
-            private final RAttributes attributes;
+            private final DynamicObject attributes;
             private final Object env;
-            private final byte[] serializedDef;
+            private final RFunction serializedDef;
 
-            public SerializedFunction(RAttributes attributes, Object env, byte[] serializedDef) {
+            public SerializedFunction(DynamicObject attributes, Object env, RFunction serializedDef) {
                 this.attributes = attributes;
                 this.env = env;
                 this.serializedDef = serializedDef;
             }
 
-            public RAttributes getAttributes() {
+            public DynamicObject getAttributes() {
                 return attributes;
             }
 
@@ -313,22 +312,22 @@ public class RChannel {
                 return env;
             }
 
-            public byte[] getSerializedDef() {
+            public RFunction getSerializedDef() {
                 return serializedDef;
             }
         }
 
         protected static class SerializedAttributable {
 
-            private final RAttributes attributes;
+            private final DynamicObject attributes;
             private final byte[] serializedAttributable;
 
-            public SerializedAttributable(RAttributes attributes, byte[] serializedAttributable) {
+            public SerializedAttributable(DynamicObject attributes, byte[] serializedAttributable) {
                 this.attributes = attributes;
                 this.serializedAttributable = serializedAttributable;
             }
 
-            public RAttributes getAttributes() {
+            public DynamicObject getAttributes() {
                 return attributes;
             }
 
@@ -351,8 +350,8 @@ public class RChannel {
 
         @TruffleBoundary
         private Object convertListAttributesToPrivate(RList l, Object shareableList) throws IOException {
-            RAttributes attr = l.getAttributes();
-            RAttributes newAttr = createShareableSlow(attr, false);
+            DynamicObject attr = l.getAttributes();
+            DynamicObject newAttr = createShareableSlow(attr, false);
             if (newAttr != attr) {
                 RList newList;
                 if (shareableList == l) {
@@ -378,8 +377,8 @@ public class RChannel {
         @TruffleBoundary
         private Object convertObjectAttributesToPrivate(Object msg) throws IOException {
             RAttributable attributable = (RAttributable) msg;
-            RAttributes attr = attributable.getAttributes();
-            RAttributes newAttr = createShareableSlow(attr, false);
+            DynamicObject attr = attributable.getAttributes();
+            DynamicObject newAttr = createShareableSlow(attr, false);
             if (newAttr != attr && attributable instanceof RShareable) {
                 attributable = (RAttributable) ((RShareable) msg).copy();
             }
@@ -406,7 +405,7 @@ public class RChannel {
                 addReadRef(msg);
             }
             REnvironment env = (REnvironment) msg;
-            RAttributes attributes = env.getAttributes();
+            DynamicObject attributes = env.getAttributes();
             if (attributes != null) {
                 attributes = createShareableSlow(attributes, true);
             }
@@ -417,29 +416,27 @@ public class RChannel {
 
         private SerializedPromise convertPrivatePromise(Object msg) throws IOException {
             RPromise p = (RPromise) msg;
-            byte[] serializedPromiseRep = RSerialize.serializePromiseRep(p);
             if (p.isEvaluated()) {
-                return new SerializedPromise(RNull.instance, p.getValue(), serializedPromiseRep);
+                return new SerializedPromise(RNull.instance, p.getValue(), p.getClosure().getExpr().asRSyntaxNode());
             } else {
                 REnvironment env = p.getFrame() == null ? REnvironment.globalEnv() : REnvironment.frameToEnvironment(p.getFrame());
-                return new SerializedPromise(convertPrivate(env), RUnboundValue.instance, serializedPromiseRep);
+                return new SerializedPromise(convertPrivate(env), RUnboundValue.instance, p.getClosure().getExpr().asRSyntaxNode());
             }
 
         }
 
         private SerializedFunction convertPrivateFunction(Object msg) throws IOException {
             RFunction fn = (RFunction) msg;
-            byte[] serializedFunctionDef = RSerialize.serializeFunctionNonEnv(fn);
             Object env = convertPrivate(REnvironment.frameToEnvironment(fn.getEnclosingFrame()));
-            RAttributes attributes = fn.getAttributes();
-            return new SerializedFunction(attributes == null ? null : createShareableSlow(attributes, true), env, serializedFunctionDef);
+            DynamicObject attributes = fn.getAttributes();
+            return new SerializedFunction(attributes == null ? null : createShareableSlow(attributes, true), env, fn);
         }
 
         private Object convertPrivateAttributable(Object msg) throws IOException {
             // do full serialization but handle attributes separately (no reason to serialize them
             // unconditionally)
             RAttributable attributable = (RAttributable) msg;
-            RAttributes attributes = attributable.getAttributes();
+            DynamicObject attributes = attributable.getAttributes();
             if (attributes != null) {
                 assert attributable instanceof RAttributeStorage;
                 // TODO: we assume that the following call will reset attributes without clearing
@@ -541,18 +538,18 @@ public class RChannel {
         }
 
         @TruffleBoundary
-        private RAttributes createShareableSlow(RAttributes attr, boolean forceCopy) throws IOException {
-            RAttributes newAttr = forceCopy ? RAttributes.create(attr) : attr;
-            for (RAttribute a : attr) {
+        private DynamicObject createShareableSlow(DynamicObject attr, boolean forceCopy) throws IOException {
+            DynamicObject newAttr = forceCopy ? RAttributesLayout.copy(attr) : attr;
+            for (RAttributesLayout.RAttribute a : RAttributesLayout.asIterable(attr)) {
                 Object val = a.getValue();
                 Object newVal = convertPrivate(val);
                 if (val != newVal) {
                     // conversion happened update element
                     if (attr == newAttr && !forceCopy) {
                         // create a shallow copy if not already created
-                        newAttr = attr.copy();
+                        newAttr = RAttributesLayout.copy(attr);
                     }
-                    newAttr.put(a.getName(), newVal);
+                    newAttr.define(a.getName(), newVal);
                 }
             }
 
@@ -620,7 +617,7 @@ public class RChannel {
             }
             REnvironment parent = (REnvironment) unserializeObject(e.getParent());
             RArguments.initializeEnclosingFrame(env.getFrame(), parent.getFrame());
-            RAttributes attributes = e.getAttributes();
+            DynamicObject attributes = e.getAttributes();
             if (attributes != null) {
                 env.initAttributes(attributes);
             }
@@ -629,28 +626,29 @@ public class RChannel {
 
         @TruffleBoundary
         private RPromise unserializePromise(SerializedPromise p) throws IOException {
-            Map<String, Object> constants = new HashMap<>();
-            String deparse = RDeparse.deparseDeserialize(constants, RSerialize.unserialize(p.getSerializedExpr(), null, null, null));
-            Source source = RSource.fromPackageTextInternal(deparse, null);
-            RExpression expr = RContext.getEngine().parse(constants, source);
-            Object env = p.getEnv();
-            if (env != RNull.instance) {
-                env = unserializeObject(env);
+            Closure closure = Closure.create(RContext.getASTBuilder().process(p.getSerializedExpr()).asRNode());
+            if (p.getValue() == RUnboundValue.instance) {
+                Object environment = p.getEnv();
+                if (environment != RNull.instance) {
+                    environment = unserializeObject(environment);
+                }
+                REnvironment env = environment == RNull.instance ? REnvironment.baseEnv() : (REnvironment) environment;
+                return RDataFactory.createPromise(PromiseState.Explicit, closure, env.getFrame());
+            } else {
+                return RDataFactory.createEvaluatedPromise(closure, p.getValue());
             }
-            return RSerialize.unserializePromise(expr, env, p.getValue());
         }
 
         @TruffleBoundary
         private RFunction unserializeFunction(SerializedFunction f) throws IOException {
-            Map<String, Object> constants = new HashMap<>();
-            RPairList l = (RPairList) RSerialize.unserialize(f.getSerializedDef(), null, null, null);
-            // seems like the best (only) way to make deparser see a correct pair list type here
-            RPairList closxpList = RDataFactory.createPairList(l.car(), l.cdr(), RNull.instance, SEXPTYPE.CLOSXP);
-            String deparse = RDeparse.deparseDeserialize(constants, closxpList);
+            RFunction fun = f.getSerializedDef();
             REnvironment env = (REnvironment) unserializeObject(f.getEnv());
             MaterializedFrame enclosingFrame = env.getFrame();
-            RFunction fn = RContext.getEngine().parseFunction(constants, null, RSource.fromTextInternal(deparse, RSource.Internal.PAIRLIST_DEPARSE), enclosingFrame);
-            RAttributes attributes = f.getAttributes();
+            HasSignature root = (HasSignature) fun.getTarget().getRootNode();
+            RootCallTarget target = root.duplicateWithNewFrameDescriptor();
+            FrameSlotChangeMonitor.initializeEnclosingFrame(target.getRootNode().getFrameDescriptor(), enclosingFrame);
+            RFunction fn = RDataFactory.createFunction(fun.getName(), fun.getPackageName(), target, null, enclosingFrame);
+            DynamicObject attributes = f.getAttributes();
             if (attributes != null) {
                 assert fn.getAttributes() == null;
                 // attributes unserialized in caller methods
@@ -661,7 +659,7 @@ public class RChannel {
 
         @TruffleBoundary
         private static RAttributable unserializeAttributable(SerializedAttributable a) throws IOException {
-            RAttributes attributes = a.getAttributes();
+            DynamicObject attributes = a.getAttributes();
             RAttributable attributable = (RAttributable) RSerialize.unserialize(a.getSerializedAttributable(), null, null, null);
             if (attributes != null) {
                 assert attributable.getAttributes() == null;
@@ -678,18 +676,18 @@ public class RChannel {
 
         @TruffleBoundary
         private void unserializeAttributes(RAttributable attributable) throws IOException {
-            RAttributes attr = attributable.getAttributes();
-            for (RAttribute a : attr) {
+            DynamicObject attr = attributable.getAttributes();
+            for (RAttributesLayout.RAttribute a : RAttributesLayout.asIterable(attr)) {
                 Object val = a.getValue();
                 Object newVal = unserializeObject(val);
                 if (newVal != val) {
                     // class attribute is a string vector which should be always shared
                     assert !a.getName().equals(RRuntime.CLASS_ATTR_KEY);
-                    // TODO: this is a bit brittle as it relies on the iterator to work
-                    // correctly in
-                    // the
-                    // face of updates (which it does under current implementation of
-                    // attributes)
+                    /*
+                     * TODO: this is a bit brittle as it relies on the iterator to work correctly in
+                     * the face of updates (which it does under current implementation of
+                     * attributes)
+                     */
                     attributable.setAttr(a.getName(), newVal);
                 }
             }

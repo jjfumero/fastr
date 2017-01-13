@@ -15,22 +15,20 @@ package com.oracle.truffle.r.nodes.objects;
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.nodes.Node;
+import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
-import com.oracle.truffle.r.nodes.attributes.AttributeAccess;
-import com.oracle.truffle.r.nodes.attributes.AttributeAccessNodeGen;
-import com.oracle.truffle.r.nodes.attributes.RemoveAttributeNode;
-import com.oracle.truffle.r.nodes.attributes.RemoveAttributeNodeGen;
+import com.oracle.truffle.r.nodes.attributes.GetFixedAttributeNode;
+import com.oracle.truffle.r.nodes.attributes.RemoveFixedAttributeNode;
+import com.oracle.truffle.r.nodes.attributes.SpecialAttributesFunctions.SetClassAttributeNode;
 import com.oracle.truffle.r.nodes.unary.CastToVectorNode;
 import com.oracle.truffle.r.nodes.unary.TypeofNode;
 import com.oracle.truffle.r.nodes.unary.TypeofNodeGen;
 import com.oracle.truffle.r.runtime.RRuntime;
 import com.oracle.truffle.r.runtime.RType;
 import com.oracle.truffle.r.runtime.data.RAttributable;
-import com.oracle.truffle.r.runtime.data.RAttributes;
 import com.oracle.truffle.r.runtime.data.RNull;
 import com.oracle.truffle.r.runtime.data.RS4Object;
 import com.oracle.truffle.r.runtime.data.RShareable;
-import com.oracle.truffle.r.runtime.data.RStringVector;
 import com.oracle.truffle.r.runtime.data.RTypedValue;
 
 // transcribed from src/main/attrib.c
@@ -38,12 +36,13 @@ public abstract class GetS4DataSlot extends Node {
 
     public abstract RTypedValue executeObject(RAttributable attObj);
 
-    @Child private AttributeAccess s3ClassAttrAccess;
-    @Child private RemoveAttributeNode s3ClassAttrRemove;
+    @Child private GetFixedAttributeNode s3ClassAttrAccess;
+    @Child private RemoveFixedAttributeNode s3ClassAttrRemove;
     @Child private CastToVectorNode castToVector;
-    @Child private AttributeAccess dotDataAttrAccess;
-    @Child private AttributeAccess dotXDataAttrAccess;
+    @Child private GetFixedAttributeNode dotDataAttrAccess;
+    @Child private GetFixedAttributeNode dotXDataAttrAccess;
     @Child private TypeofNode typeOf = TypeofNodeGen.create();
+    @Child private SetClassAttributeNode setClassAttrNode;
 
     private final BranchProfile shareable = BranchProfile.create();
 
@@ -59,11 +58,11 @@ public abstract class GetS4DataSlot extends Node {
         Object value = null;
         if (!(obj instanceof RS4Object) || type == RType.S4Object) {
             Object s3Class = null;
-            RAttributes attributes = obj.getAttributes();
+            DynamicObject attributes = obj.getAttributes();
             if (attributes != null) {
                 if (s3ClassAttrAccess == null) {
                     CompilerDirectives.transferToInterpreterAndInvalidate();
-                    s3ClassAttrAccess = insert(AttributeAccessNodeGen.create(RRuntime.DOT_S3_CLASS));
+                    s3ClassAttrAccess = insert(GetFixedAttributeNode.create(RRuntime.DOT_S3_CLASS));
                 }
                 s3Class = s3ClassAttrAccess.execute(attributes);
             }
@@ -74,18 +73,24 @@ public abstract class GetS4DataSlot extends Node {
                 shareable.enter();
                 obj = (RAttributable) ((RShareable) obj).copy();
             }
+
+            if (setClassAttrNode == null) {
+                CompilerDirectives.transferToInterpreterAndInvalidate();
+                setClassAttrNode = insert(SetClassAttributeNode.create());
+            }
+
             if (s3Class != null) {
                 if (s3ClassAttrRemove == null) {
                     assert castToVector == null;
                     CompilerDirectives.transferToInterpreterAndInvalidate();
-                    s3ClassAttrRemove = insert(RemoveAttributeNodeGen.create(RRuntime.DOT_S3_CLASS));
+                    s3ClassAttrRemove = insert(RemoveFixedAttributeNode.create(RRuntime.DOT_S3_CLASS));
                     castToVector = insert(CastToVectorNode.create());
 
                 }
                 s3ClassAttrRemove.execute(obj.initAttributes());
-                obj = obj.setClassAttr((RStringVector) castToVector.execute(s3Class));
+                setClassAttrNode.execute(obj, castToVector.execute(s3Class));
             } else {
-                obj = obj.setClassAttr(null);
+                setClassAttrNode.reset(obj);
             }
             obj.unsetS4();
             if (type == RType.S4Object) {
@@ -93,21 +98,21 @@ public abstract class GetS4DataSlot extends Node {
             }
             value = obj;
         } else {
-            RAttributes attributes = obj.getAttributes();
+            DynamicObject attributes = obj.getAttributes();
             if (attributes != null) {
                 if (dotDataAttrAccess == null) {
                     CompilerDirectives.transferToInterpreterAndInvalidate();
-                    dotDataAttrAccess = insert(AttributeAccessNodeGen.create(RRuntime.DOT_DATA));
+                    dotDataAttrAccess = insert(GetFixedAttributeNode.create(RRuntime.DOT_DATA));
                 }
                 value = dotDataAttrAccess.execute(attributes);
             }
         }
         if (value == null) {
-            RAttributes attributes = obj.getAttributes();
+            DynamicObject attributes = obj.getAttributes();
             if (attributes != null) {
                 if (dotXDataAttrAccess == null) {
                     CompilerDirectives.transferToInterpreterAndInvalidate();
-                    dotXDataAttrAccess = insert(AttributeAccessNodeGen.create(RRuntime.DOT_XDATA));
+                    dotXDataAttrAccess = insert(GetFixedAttributeNode.create(RRuntime.DOT_XDATA));
                 }
                 value = dotXDataAttrAccess.execute(attributes);
             }

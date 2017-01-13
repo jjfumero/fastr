@@ -4,7 +4,7 @@
  * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * Copyright (c) 2014, Purdue University
- * Copyright (c) 2014, 2016, Oracle and/or its affiliates
+ * Copyright (c) 2014, 2017, Oracle and/or its affiliates
  *
  * All rights reserved.
  */
@@ -34,7 +34,7 @@ public class TestBuiltin_options extends TestBase {
 
     @Test
     public void testoptions4() {
-        assertEval(Ignored.Unknown, "argv <- list('ts.eps'); .Internal(options(argv[[1]]))");
+        assertEval("argv <- list('ts.eps'); .Internal(options(argv[[1]]))");
     }
 
     @Test
@@ -47,5 +47,25 @@ public class TestBuiltin_options extends TestBase {
         assertEval("{ getOption(NULL) }");
         assertEval("{ getOption(character()) }");
         assertEval("{ options(\"timeout\", \"width\") }");
+    }
+
+    @Test
+    public void testEditor() {
+        assertEval("{ f<-function(){}; options(editor=f); identical(getOption(\"editor\"), f) }");
+        assertEval("{ options(editor=\"vi\"); identical(getOption(\"editor\"), \"vi\") }");
+        assertEval("{ options(editor=NULL); identical(getOption(\"editor\"), NULL) }");
+        assertEval(Ignored.WrongCaller, "{ options(editor=\"\") }");
+    }
+
+    @Test
+    public void testPrompt() {
+        assertEval(Ignored.WrongCaller, "{ options(prompt=NULL) }");
+        assertEval("{ options(prompt=\"abc\"); identical(getOption(\"prompt\"), \"abc\") }");
+    }
+
+    @Test
+    public void testContinue() {
+        assertEval(Ignored.WrongCaller, "{ options(continue=NULL) }");
+        assertEval("{ options(continue=\"abc\"); identical(getOption(\"continue\"), \"abc\") }");
     }
 }

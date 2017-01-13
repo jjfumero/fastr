@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,6 +22,11 @@
  */
 package com.oracle.truffle.r.runtime.data;
 
+import java.util.Iterator;
+
+import com.oracle.truffle.api.CompilerAsserts;
+import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.r.runtime.RRuntime;
 import com.oracle.truffle.r.runtime.env.REnvironment;
 
@@ -29,7 +34,7 @@ import com.oracle.truffle.r.runtime.env.REnvironment;
  * Denotes an R type that can have associated attributes, e.g. {@link RVector}, {@link REnvironment}
  *
  * An attribute is a {@code String, Object} pair. The set of attributes associated with an
- * {@link RAttributable} is implemented by the {@link RAttributes} class.
+ * {@link RAttributable} is implemented by the {@link DynamicObject} class.
  */
 public interface RAttributable extends RTypedValue {
 
@@ -38,20 +43,21 @@ public interface RAttributable extends RTypedValue {
      *
      * @return the pre-existing or new value
      */
-    RAttributes initAttributes();
+    DynamicObject initAttributes();
 
-    void initAttributes(RAttributes newAttributes);
+    void initAttributes(DynamicObject newAttributes);
 
     /**
      * Access all the attributes. Use {@code for (RAttribute a : getAttributes) ... }. Returns
      * {@code null} if not initialized.
      */
-    RAttributes getAttributes();
+    DynamicObject getAttributes();
 
     /**
      * Returns the value of the {@code class} attribute or empty {@link RStringVector} if class
      * attribute is not set.
      */
+    @TruffleBoundary
     default RStringVector getClassHierarchy() {
         Object v = getAttr(RRuntime.CLASS_ATTR_KEY);
         RStringVector result = v instanceof RStringVector ? (RStringVector) v : getImplicitClass();
@@ -77,20 +83,9 @@ public interface RAttributable extends RTypedValue {
     /**
      * Get the value of an attribute. Returns {@code null} if not set.
      */
-    default Object getAttr(RAttributeProfiles profiles, String name) {
-        RAttributes attributes = getAttributes();
-        if (profiles.attrNullProfile(attributes == null)) {
-            return null;
-        } else {
-            return attributes.get(name);
-        }
-    }
-
-    /**
-     * Get the value of an attribute. Returns {@code null} if not set.
-     */
     default Object getAttr(String name) {
-        RAttributes attr = getAttributes();
+        CompilerAsserts.neverPartOfCompilation();
+        DynamicObject attr = getAttributes();
         return attr == null ? null : attr.get(name);
     }
 
@@ -99,37 +94,30 @@ public interface RAttributable extends RTypedValue {
      * generic; a class may need to override this to handle certain attributes specially.
      */
     default void setAttr(String name, Object value) {
-        RAttributes attributes = getAttributes();
+        CompilerAsserts.neverPartOfCompilation();
+        DynamicObject attributes = getAttributes();
         if (attributes == null) {
             attributes = initAttributes();
         }
-        attributes.put(name, value);
-    }
-
-    /**
-     * Remove the attribute {@code name}. No error if {@code name} is not an attribute. This is
-     * generic; a class may need to override this to handle certain attributes specially.
-     */
-    default void removeAttr(RAttributeProfiles profiles, String name) {
-        RAttributes attributes = getAttributes();
-        if (profiles.attrNullProfile(attributes == null)) {
-            return;
-        } else {
-            attributes.remove(name);
-        }
+        attributes.define(name, value);
     }
 
     default void removeAttr(String name) {
-        RAttributes attributes = getAttributes();
+        CompilerAsserts.neverPartOfCompilation();
+        DynamicObject attributes = getAttributes();
         if (attributes != null) {
-            attributes.remove(name);
+            attributes.delete(name);
+            if (attributes.isEmpty()) {
+                initAttributes(null);
+            }
         }
     }
 
     default void removeAllAttributes() {
-        RAttributes attributes = getAttributes();
+        CompilerAsserts.neverPartOfCompilation();
+        DynamicObject attributes = getAttributes();
         if (attributes != null) {
-            attributes.clear();
+            RAttributesLayout.clear(attributes);
         }
     }
 
@@ -139,33 +127,45 @@ public interface RAttributable extends RTypedValue {
      * initialized and will be just cleared, unless nullify is {@code true}.
      *
      * @param nullify Some implementations can force nullifying attributes instance if this flag is
-     *            set to {@code true}. Nullifying is not guaranteed for al implementations.
+     *            set to {@code true}. Nullifying is not guaranteed for all implementations.
      */
     default void resetAllAttributes(boolean nullify) {
-        RAttributes attributes = getAttributes();
+        DynamicObject attributes = getAttributes();
         if (attributes != null) {
-            attributes.clear();
+            RAttributesLayout.clear(attributes);
         }
     }
 
     default RAttributable setClassAttr(RStringVector classAttr) {
+        CompilerAsserts.neverPartOfCompilation();
         if (classAttr == null && getAttributes() != null) {
-            getAttributes().remove(RRuntime.CLASS_ATTR_KEY);
+            getAttributes().delete(RRuntime.CLASS_ATTR_KEY);
         } else {
             setAttr(RRuntime.CLASS_ATTR_KEY, classAttr);
         }
         return this;
     }
 
-    default RStringVector getClassAttr(RAttributeProfiles profiles) {
-        return (RStringVector) getAttr(profiles, RRuntime.CLASS_ATTR_KEY);
+    default RStringVector getClassAttr() {
+        return (RStringVector) getAttr(RRuntime.CLASS_ATTR_KEY);
     }
 
     /**
      * Returns {@code true} if and only if the value has a {@code class} attribute added explicitly.
      * When {@code true}, it is possible to call {@link RAttributable#getClassHierarchy()}.
      */
-    default boolean isObject(RAttributeProfiles profiles) {
-        return getClassAttr(profiles) != null ? true : false;
+    default boolean isObject() {
+        return getClassAttr() != null ? true : false;
+    }
+
+    static void copyAttributes(RAttributable obj, DynamicObject attrs) {
+        if (attrs == null) {
+            return;
+        }
+        Iterator<RAttributesLayout.RAttribute> iter = RAttributesLayout.asIterable(attrs).iterator();
+        while (iter.hasNext()) {
+            RAttributesLayout.RAttribute attr = iter.next();
+            obj.setAttr(attr.getName(), attr.getValue());
+        }
     }
 }

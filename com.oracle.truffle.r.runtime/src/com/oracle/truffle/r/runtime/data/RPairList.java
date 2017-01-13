@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,11 +26,11 @@ import java.util.Iterator;
 
 import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.r.runtime.RInternalError;
 import com.oracle.truffle.r.runtime.RRuntime;
 import com.oracle.truffle.r.runtime.RType;
 import com.oracle.truffle.r.runtime.Utils;
-import com.oracle.truffle.r.runtime.data.RAttributes.RAttribute;
 import com.oracle.truffle.r.runtime.data.model.RAbstractContainer;
 import com.oracle.truffle.r.runtime.data.model.RAbstractVector;
 import com.oracle.truffle.r.runtime.gnur.SEXPTYPE;
@@ -148,15 +148,15 @@ public class RPairList extends RSharingAttributeStorage implements RAbstractCont
             }
         }
         RList result = named ? RDataFactory.createList(data, RDataFactory.createStringVector(names, RDataFactory.COMPLETE_VECTOR)) : RDataFactory.createList(data);
-        RAttributes attrs = getAttributes();
+        DynamicObject attrs = getAttributes();
         if (attrs != null) {
-            RAttributes resultAttrs = result.initAttributes();
-            Iterator<RAttribute> iter = attrs.iterator();
+            DynamicObject resultAttrs = result.initAttributes();
+            Iterator<RAttributesLayout.RAttribute> iter = RAttributesLayout.asIterable(attrs).iterator();
             while (iter.hasNext()) {
-                RAttribute attr = iter.next();
+                RAttributesLayout.RAttribute attr = iter.next();
                 String attrName = attr.getName();
                 if (!(attrName.equals(RRuntime.NAMES_ATTR_KEY) || attrName.equals(RRuntime.DIM_ATTR_KEY) || attrName.equals(RRuntime.DIMNAMES_ATTR_KEY))) {
-                    resultAttrs.put(attrName, attr.getValue());
+                    resultAttrs.define(attrName, attr.getValue());
                 }
             }
         }
@@ -275,10 +275,7 @@ public class RPairList extends RSharingAttributeStorage implements RAbstractCont
             original = origList.cdr;
         }
         if (getAttributes() != null) {
-            RAttributes newAttributes = result.initAttributes();
-            for (RAttribute attr : getAttributes()) {
-                newAttributes.put(attr.getName(), attr.getValue());
-            }
+            result.initAttributes(RAttributesLayout.copy(getAttributes()));
         }
         return result;
     }
@@ -311,7 +308,7 @@ public class RPairList extends RSharingAttributeStorage implements RAbstractCont
     }
 
     @Override
-    public RStringVector getNames(RAttributeProfiles attrProfiles) {
+    public final RStringVector getNames() {
         int l = getLength();
         String[] data = new String[l];
         RPairList pl = this;
@@ -332,7 +329,7 @@ public class RPairList extends RSharingAttributeStorage implements RAbstractCont
     }
 
     @Override
-    public void setNames(RStringVector newNames) {
+    public final void setNames(RStringVector newNames) {
         Object p = this;
         for (int i = 0; i < newNames.getLength() && !isNull(p); i++) {
             RPairList pList = (RPairList) p;
@@ -342,17 +339,12 @@ public class RPairList extends RSharingAttributeStorage implements RAbstractCont
     }
 
     @Override
-    public RList getDimNames(RAttributeProfiles attrProfiles) {
+    public RList getDimNames() {
         return null;
     }
 
     @Override
     public void setDimNames(RList newDimNames) {
-        throw RInternalError.unimplemented();
-    }
-
-    @Override
-    public Object getRowNames(RAttributeProfiles attrProfiles) {
         throw RInternalError.unimplemented();
     }
 
@@ -367,7 +359,7 @@ public class RPairList extends RSharingAttributeStorage implements RAbstractCont
     }
 
     @Override
-    public boolean isObject(RAttributeProfiles attrProfiles) {
+    public final boolean isObject() {
         return false;
     }
 }

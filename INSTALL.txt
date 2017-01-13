@@ -8,12 +8,12 @@ Clone mx:
 $ git clone https://github.com/graalvm/mx
 $ export PATH=$PWD/mx:$PATH 
  
-Download JVMCI 0.21 from Oracle OTN
+Download JVMCI 0.23 from Oracle OTN
 
-$ cp ~/Downloads/labsjdk-8u92-jvmci-0.21-linux-amd64.tar.gz .
-$ tar xvzf labsjdk-8u92-jvmci-0.21-linux-amd64.tar.gz 
+$ cp ~/Downloads/labsjdk-8u111-jvmci-0.23-linux-amd64.tar.gz .
+$ tar xvzf labsjdk-8u111-jvmci-0.23-linux-amd64.tar.gz 
  
-$ export JAVA_HOME=`pwd`/labsjdk1.8.0_92-jvmci-0.21
+$ export JAVA_HOME=`pwd`/labsjdk-8u111-jvmci-0.23
  
 Clone FastR:
 

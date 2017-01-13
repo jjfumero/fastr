@@ -38,6 +38,7 @@ import java.nio.file.FileSystems;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -46,6 +47,7 @@ import java.nio.file.attribute.PosixFileAttributes;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
+import java.util.List;
 import java.util.function.BiFunction;
 import java.util.function.BiPredicate;
 import java.util.regex.Matcher;
@@ -55,15 +57,19 @@ import java.util.stream.Stream;
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Specialization;
+import com.oracle.truffle.r.nodes.attributes.SpecialAttributesFunctions.SetClassAttributeNode;
 import com.oracle.truffle.r.nodes.builtin.CastBuilder;
 import com.oracle.truffle.r.nodes.builtin.RBuiltinNode;
 import com.oracle.truffle.r.nodes.unary.CastStringNode;
 import com.oracle.truffle.r.nodes.unary.CastStringNodeGen;
 import com.oracle.truffle.r.runtime.RError;
+import com.oracle.truffle.r.runtime.RError.Message;
 import com.oracle.truffle.r.runtime.RInternalError;
 import com.oracle.truffle.r.runtime.RRuntime;
 import com.oracle.truffle.r.runtime.Utils;
 import com.oracle.truffle.r.runtime.builtins.RBuiltin;
+import com.oracle.truffle.r.runtime.context.ConsoleHandler;
+import com.oracle.truffle.r.runtime.context.RContext;
 import com.oracle.truffle.r.runtime.data.RDataFactory;
 import com.oracle.truffle.r.runtime.data.RIntVector;
 import com.oracle.truffle.r.runtime.data.RList;
@@ -259,6 +265,8 @@ public class FileFunctions {
         private static final RStringVector NAMES_VECTOR = RDataFactory.createStringVector(NAMES, RDataFactory.COMPLETE_VECTOR);
         private static final RStringVector OCTMODE = RDataFactory.createStringVectorFromScalar("octmode");
 
+        @Child private SetClassAttributeNode setClassAttrNode;
+
         @Override
         protected void createCasts(CastBuilder casts) {
             casts.arg("extra_cols").asLogicalVector().findFirst().map(toBoolean());
@@ -393,12 +401,19 @@ public class FileFunctions {
             // @formatter:on
         }
 
-        private static Object createColumnResult(Column column, Object data, boolean complete) {
+        private Object createColumnResult(Column column, Object data, boolean complete) {
             // @formatter:off
             switch(column) {
                 case size: return RDataFactory.createDoubleVector((double[]) data, complete);
                 case isdir: return RDataFactory.createLogicalVector((byte[]) data, complete);
-                case mode: RIntVector res = RDataFactory.createIntVector((int[]) data, complete); res.setClassAttr(OCTMODE); return res;
+                case mode:
+                    if (setClassAttrNode == null) {
+                        CompilerDirectives.transferToInterpreterAndInvalidate();
+                        setClassAttrNode = insert(SetClassAttributeNode.create());
+                    }
+                    RIntVector res = RDataFactory.createIntVector((int[]) data, complete);
+                    setClassAttrNode.execute(res, OCTMODE);
+                    return res;
                 case mtime: case ctime: case atime:
                 case uid: case gid: return RDataFactory.createIntVector((int[]) data, complete);
                 case uname: case grname: return RDataFactory.createStringVector((String[]) data, complete);
@@ -1001,29 +1016,66 @@ public class FileFunctions {
         }
     }
 
-    abstract static class XyzNameAdapter extends RBuiltinNode {
+    @RBuiltin(name = "file.show", kind = INTERNAL, parameterNames = {"files", "header", "title", "delete.file", "pager"}, visibility = OFF, behavior = IO)
+    public abstract static class FileShow extends RBuiltinNode {
 
-        protected RStringVector doXyzName(RAbstractStringVector vec, BiFunction<FileSystem, String, String> fun) {
-            FileSystem fileSystem = FileSystems.getDefault();
-            boolean complete = RDataFactory.COMPLETE_VECTOR;
-            String[] data = new String[vec.getLength()];
-            for (int i = 0; i < data.length; i++) {
-                String name = vec.getDataAt(i);
-                if (RRuntime.isNA(name)) {
-                    data[i] = name;
-                    complete = RDataFactory.INCOMPLETE_VECTOR;
-                } else if (name.length() == 0) {
-                    data[i] = name;
-                } else {
-                    data[i] = fun.apply(fileSystem, name);
+        @Override
+        protected void createCasts(CastBuilder casts) {
+            casts.arg("files").asStringVector();
+            casts.arg("header").asStringVector();
+            casts.arg("title").asStringVector();
+            casts.arg("delete.file").asLogicalVector().findFirst().map(toBoolean());
+            casts.arg("pager").asStringVector().findFirst();
+        }
+
+        @Specialization
+        @TruffleBoundary
+        protected static RNull show(RAbstractStringVector files, RAbstractStringVector header, RAbstractStringVector title, boolean deleteFile, @SuppressWarnings("unused") String pager) {
+            ConsoleHandler console = RContext.getInstance().getConsoleHandler();
+            for (int i = 0; i < title.getLength(); i++) {
+                console.println("==== " + title.getDataAt(i) + " ====");
+            }
+            for (int i = 0; i < files.getLength(); i++) {
+                if (i < header.getLength() && !header.getDataAt(i).isEmpty()) {
+                    console.println("== " + header.getDataAt(i) + " ==");
+                }
+                try {
+                    Path path = Paths.get(files.getDataAt(i));
+                    List<String> lines = Files.readAllLines(path);
+                    for (String line : lines) {
+                        console.println(line);
+                    }
+                    if (deleteFile) {
+                        path.toFile().delete();
+                    }
+                } catch (IOException e) {
+                    throw RError.error(RError.SHOW_CALLER, Message.GENERIC, e.getMessage());
                 }
             }
-            return RDataFactory.createStringVector(data, complete);
+            return RNull.instance;
         }
     }
 
+    protected static RStringVector doXyzName(RAbstractStringVector vec, BiFunction<FileSystem, String, String> fun) {
+        FileSystem fileSystem = FileSystems.getDefault();
+        boolean complete = RDataFactory.COMPLETE_VECTOR;
+        String[] data = new String[vec.getLength()];
+        for (int i = 0; i < data.length; i++) {
+            String name = vec.getDataAt(i);
+            if (RRuntime.isNA(name)) {
+                data[i] = name;
+                complete = RDataFactory.INCOMPLETE_VECTOR;
+            } else if (name.length() == 0) {
+                data[i] = name;
+            } else {
+                data[i] = fun.apply(fileSystem, name);
+            }
+        }
+        return RDataFactory.createStringVector(data, complete);
+    }
+
     @RBuiltin(name = "dirname", kind = INTERNAL, parameterNames = {"path"}, behavior = IO)
-    public abstract static class DirName extends XyzNameAdapter {
+    public abstract static class DirName extends RBuiltinNode {
         @Override
         protected void createCasts(CastBuilder casts) {
             casts.arg("path").mustBe(stringValue(), RError.Message.CHAR_VEC_ARGUMENT);
@@ -1041,7 +1093,7 @@ public class FileFunctions {
     }
 
     @RBuiltin(name = "basename", kind = INTERNAL, parameterNames = {"path"}, behavior = IO)
-    public abstract static class BaseName extends XyzNameAdapter {
+    public abstract static class BaseName extends RBuiltinNode {
 
         @Override
         protected void createCasts(CastBuilder casts) {
@@ -1205,6 +1257,5 @@ public class FileFunctions {
             }
             return RDataFactory.createLogicalVector(data, RDataFactory.COMPLETE_VECTOR);
         }
-
     }
 }

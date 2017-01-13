@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,13 +22,14 @@
  */
 package com.oracle.truffle.r.nodes.builtin.base.printer;
 
-import com.oracle.truffle.api.frame.Frame;
 import java.io.IOException;
 import java.io.PrintWriter;
 
+import com.oracle.truffle.api.frame.Frame;
 import com.oracle.truffle.r.nodes.access.variables.ReadVariableNode;
 import com.oracle.truffle.r.runtime.context.RContext;
-import com.oracle.truffle.r.runtime.data.RAttributes.RAttribute;
+import com.oracle.truffle.r.runtime.data.RAttributesLayout;
+import com.oracle.truffle.r.runtime.data.RAttributesLayout.RAttribute;
 import com.oracle.truffle.r.runtime.data.RFunction;
 import com.oracle.truffle.r.runtime.data.RS4Object;
 
@@ -44,12 +45,14 @@ final class S4ObjectPrinter implements ValuePrinter<RS4Object> {
     public void print(RS4Object object, PrintContext printCtx) throws IOException {
         final PrintWriter out = printCtx.output();
         out.print("<S4 Type Object>");
-        for (RAttribute attr : object.getAttributes()) {
-            printAttribute(attr, printCtx);
+        if (object.getAttributes() != null) {
+            for (RAttribute attr : RAttributesLayout.asIterable(object.getAttributes())) {
+                printAttribute(attr, printCtx);
+            }
         }
     }
 
-    private static void printAttribute(RAttribute attr, PrintContext printCtx) throws IOException {
+    private static void printAttribute(RAttributesLayout.RAttribute attr, PrintContext printCtx) throws IOException {
         final PrintWriter out = printCtx.output();
         out.println();
         out.print("attr(,\"");

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,10 +22,17 @@
  */
 package com.oracle.truffle.r.runtime.data;
 
+import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.r.runtime.RInternalError;
 import com.oracle.truffle.r.runtime.data.model.RAbstractContainer;
 import com.oracle.truffle.r.runtime.data.model.RAbstractVector;
 
+/**
+ * An {@link RSequence} only records the "length", "start" and "stride" (the latter two fields in
+ * the subclasses {@link RIntSequence} and {@link RDoubleSequence}. The "stride" value is positive
+ * to indicate an ascending sequence and negative for a descending sequence. I.e., the "end" is
+ * computed and not stored.
+ */
 public abstract class RSequence implements RAbstractVector {
 
     private final int length;
@@ -103,7 +110,7 @@ public abstract class RSequence implements RAbstractVector {
     }
 
     @Override
-    public final RStringVector getNames(RAttributeProfiles attrProfiles) {
+    public final RStringVector getNames() {
         return null;
     }
 
@@ -114,7 +121,7 @@ public abstract class RSequence implements RAbstractVector {
     }
 
     @Override
-    public final RList getDimNames(RAttributeProfiles attrProfiles) {
+    public final RList getDimNames() {
         return null;
     }
 
@@ -125,7 +132,7 @@ public abstract class RSequence implements RAbstractVector {
     }
 
     @Override
-    public final Object getRowNames(RAttributeProfiles attrProfiles) {
+    public final Object getRowNames() {
         return RNull.instance;
     }
 
@@ -136,17 +143,17 @@ public abstract class RSequence implements RAbstractVector {
     }
 
     @Override
-    public final RAttributes initAttributes() {
+    public final DynamicObject initAttributes() {
         throw RInternalError.shouldNotReachHere();
     }
 
     @Override
-    public final void initAttributes(RAttributes newAttributes) {
+    public final void initAttributes(DynamicObject newAttributes) {
         throw RInternalError.shouldNotReachHere();
     }
 
     @Override
-    public final RAttributes getAttributes() {
+    public final DynamicObject getAttributes() {
         return null;
     }
 
@@ -161,7 +168,7 @@ public abstract class RSequence implements RAbstractVector {
     }
 
     @Override
-    public final boolean isObject(RAttributeProfiles attrProfiles) {
+    public final boolean isObject() {
         return false;
     }
 

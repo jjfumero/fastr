@@ -22,7 +22,8 @@
  */
 package com.oracle.truffle.r.nodes.builtin.fastr;
 
-import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.*;
+import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.instanceOf;
+import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.toBoolean;
 import static com.oracle.truffle.r.runtime.RVisibility.OFF;
 import static com.oracle.truffle.r.runtime.builtins.RBehavior.IO;
 import static com.oracle.truffle.r.runtime.builtins.RBuiltinKind.PRIMITIVE;
@@ -52,7 +53,6 @@ import com.oracle.truffle.r.runtime.nodes.RSyntaxElement;
 import com.oracle.truffle.r.runtime.nodes.RSyntaxFunction;
 import com.oracle.truffle.r.runtime.nodes.RSyntaxLookup;
 import com.oracle.truffle.r.runtime.nodes.RSyntaxNode;
-import com.oracle.truffle.r.runtime.nodes.RSyntaxNodeVisitor;
 import com.oracle.truffle.r.runtime.nodes.RSyntaxVisitor;
 
 /**
@@ -62,9 +62,7 @@ import com.oracle.truffle.r.runtime.nodes.RSyntaxVisitor;
  * Only nodes that return {@code true} to {@link RSyntaxNode#isSyntax()} are processed. N.B. This
  * will reach nodes that implement {@link RSyntaxNode} but are used in {@link RSyntaxNode#INTERNAL}
  * mode</li>
- * <li><b>rsyntaxnode</b>: Use the {@link RSyntaxNodeVisitor}. The main difference from mode
- * {@code node} is that the children of non-syntax nodes are not visited at all.</li>
- * <li><b<syntaxelement</b>: Use the {@link RSyntaxVisitor} to visit the "logical" syntax tree.</li>
+ * <li><b>syntaxelement</b>: Use the {@link RSyntaxVisitor} to visit the "logical" syntax tree.</li>
  * </ol>
  *
  */
@@ -73,7 +71,7 @@ public abstract class FastRSyntaxTree extends RBuiltinNode {
 
     @Override
     public Object[] getDefaultParameterValues() {
-        return new Object[]{RMissing.instance, "rsyntaxnode", RRuntime.LOGICAL_FALSE, RRuntime.LOGICAL_FALSE};
+        return new Object[]{RMissing.instance, "syntaxelement", RRuntime.LOGICAL_FALSE, RRuntime.LOGICAL_FALSE};
     }
 
     @Override
@@ -105,20 +103,6 @@ public abstract class FastRSyntaxTree extends RBuiltinNode {
                 });
                 break;
 
-            case "rsyntaxnode":
-                RSyntaxNode.accept(root, 0, new RSyntaxNodeVisitor() {
-
-                    @Override
-                    public boolean visit(RSyntaxNode node, int depth) {
-                        printIndent(depth);
-                        writeString(node.getClass().getSimpleName(), false);
-                        processRSyntaxNode(node, printSource, printTags);
-                        printnl();
-                        return true;
-                    }
-                }, true);
-                break;
-
             case "syntaxelement":
                 RSyntaxVisitor<Void> visitor = new RSyntaxVisitor<Void>() {
                     private int depth;
@@ -126,12 +110,18 @@ public abstract class FastRSyntaxTree extends RBuiltinNode {
                     @Override
                     protected Void visit(RSyntaxCall element) {
                         printIndent(depth);
-                        writeString(element.getClass().getSimpleName(), false);
+                        RSyntaxElement lhs = element.getSyntaxLHS();
+                        if (lhs instanceof RSyntaxLookup) {
+                            writeString(element.getClass().getSimpleName() + " " + ((RSyntaxLookup) lhs).getIdentifier(), false);
+                        } else {
+                            writeString(element.getClass().getSimpleName(), false);
+                        }
                         processSourceSection(element.getSourceSection(), printSource);
                         printnl();
-                        RSyntaxElement lhs = element.getSyntaxLHS();
                         RSyntaxElement[] arguments = element.getSyntaxArguments();
-                        accept(lhs);
+                        if (!(lhs instanceof RSyntaxLookup)) {
+                            accept(lhs);
+                        }
                         for (RSyntaxElement arg : arguments) {
                             depth++;
                             accept(arg);

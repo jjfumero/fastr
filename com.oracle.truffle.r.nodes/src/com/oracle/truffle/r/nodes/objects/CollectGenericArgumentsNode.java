@@ -37,12 +37,15 @@ import com.oracle.truffle.r.nodes.function.ClassHierarchyScalarNode;
 import com.oracle.truffle.r.nodes.function.ClassHierarchyScalarNodeGen;
 import com.oracle.truffle.r.nodes.function.PromiseHelperNode;
 import com.oracle.truffle.r.nodes.function.PromiseHelperNode.PromiseCheckHelperNode;
+import com.oracle.truffle.r.runtime.Utils;
 import com.oracle.truffle.r.runtime.data.RDataFactory;
 import com.oracle.truffle.r.runtime.data.RList;
 import com.oracle.truffle.r.runtime.data.RPromise;
 import com.oracle.truffle.r.runtime.data.RStringVector;
 import com.oracle.truffle.r.runtime.data.RSymbol;
 import com.oracle.truffle.r.runtime.nodes.RBaseNode;
+
+// transcribed from /src/library/methods/src/methods_list_dispatch.c (R_dispatch_generic function)
 
 /*
  * Used to collect arguments of the generic function for S4 method dispatch. Modeled after {@link CollectArgumentsNode}.
@@ -82,7 +85,7 @@ public abstract class CollectGenericArgumentsNode extends RBaseNode {
         for (int i = 0; i < argReads.length; i++) {
             Object cachedId = argReads[i].getIdentifier();
             String id = ((RSymbol) (arguments.getDataAt(i))).getName();
-            assert cachedId instanceof String && cachedId == ((String) cachedId).intern() && id == id.intern();
+            assert cachedId instanceof String && Utils.isInterned((String) cachedId) && Utils.isInterned(id);
             if (cachedId != id) {
                 throw new SlowPathException();
             }

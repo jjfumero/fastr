@@ -22,6 +22,7 @@
  */
 package com.oracle.truffle.r.runtime;
 
+import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
 import com.oracle.truffle.r.runtime.context.Engine;
@@ -91,6 +92,12 @@ public interface RRuntimeASTAccess {
     RLanguage getSyntaxCaller(RCaller rl);
 
     /**
+     * Gets {@code TruffleRLanguage} avoiding project circularity.
+     */
+    @SuppressWarnings("rawtypes")
+    Class<? extends TruffleLanguage> getTruffleRLanguage();
+
+    /**
      * Returns a string for a call as represented by {@code rl}, returned originally by
      * {@link #getSyntaxCaller}.
      */
@@ -144,12 +151,6 @@ public interface RRuntimeASTAccess {
     Engine createEngine(RContext context);
 
     /**
-     * Returns {@code null} if {@code node} is not an instance of {@code ReplacementNode}, else the
-     * lhs,rhs pair.
-     */
-    RSyntaxNode[] isReplacementNode(Node node);
-
-    /**
      * Returns {@code true} iff {@code node} is an instance of {@code FunctionDefinitionNode}, which
      * is not visible from {@code runtime}, or {@code false} otherwise.
      */
@@ -197,5 +198,7 @@ public interface RRuntimeASTAccess {
     String encodeComplex(RComplex x);
 
     String encodeComplex(RComplex x, int digits);
+
+    void checkDebugRequest(RFunction func);
 
 }

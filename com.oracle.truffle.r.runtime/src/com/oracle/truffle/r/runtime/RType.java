@@ -44,7 +44,7 @@ public enum RType {
     DefunctReal("real", -1),
     DefunctSingle("single", -1),
     ExternalPtr("externalptr", -1),
-    S4Object("s4object", -1),
+    S4Object("S4", -1),
     Connection("connection", -1),
     Dots("...", -1);
 
@@ -143,6 +143,7 @@ public enum RType {
                 return Builtin;
             case "special":
                 return Special;
+            case "name":
             case "symbol":
                 return Symbol;
             case "environment":
@@ -159,7 +160,7 @@ public enum RType {
                 return DefunctSingle;
             case "externalptr":
                 return ExternalPtr;
-            case "s4object":
+            case "S4":
                 return S4Object;
             case "connection":
                 return Connection;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,6 +24,7 @@ package com.oracle.truffle.r.runtime.conn;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
+import java.io.ByteArrayInputStream;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -32,6 +33,8 @@ import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.util.zip.GZIPInputStream;
+
+import org.tukaani.xz.XZInputStream;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.r.runtime.RCompression;
@@ -110,7 +113,15 @@ public class FileConnections {
                     inputStream = new BufferedInputStream(new FileInputStream(base.path));
                     break;
                 case GZIP:
-                    inputStream = new GZIPInputStream(new FileInputStream(base.path), GZIPConnections.GZIP_BUFFER_SIZE);
+                    inputStream = new GZIPInputStream(new FileInputStream(base.path), CompressedConnections.GZIP_BUFFER_SIZE);
+                    break;
+                case BZIP2:
+                    // no in Java support, so go via byte array
+                    byte[] bzipUdata = RCompression.bzipUncompressFromFile(base.path);
+                    inputStream = new ByteArrayInputStream(bzipUdata);
+                    break;
+                case XZ:
+                    inputStream = new XZInputStream(new FileInputStream(base.path));
                     break;
                 default:
                     throw RError.nyi(RError.SHOW_CALLER2, "compression type: " + cType.name());
@@ -156,7 +167,7 @@ public class FileConnections {
     }
 
     private static class FileWriteTextRConnection extends DelegateWriteRConnection implements ReadWriteHelper {
-        private BufferedOutputStream outputStream;
+        private final BufferedOutputStream outputStream;
 
         FileWriteTextRConnection(FileRConnection base, boolean append) throws IOException {
             super(base);
@@ -207,7 +218,7 @@ public class FileConnections {
     }
 
     static class FileReadBinaryRConnection extends DelegateReadRConnection implements ReadWriteHelper {
-        private FileInputStream inputStream;
+        private final FileInputStream inputStream;
 
         FileReadBinaryRConnection(BasePathRConnection base) throws IOException {
             super(base);
@@ -250,10 +261,36 @@ public class FileConnections {
         public void close() throws IOException {
             inputStream.close();
         }
+
+        @Override
+        public boolean isSeekable() {
+            return true;
+        }
+
+        @Override
+        public long seek(long offset, SeekMode seekMode, SeekRWMode seekRWMode) throws IOException {
+            long position = inputStream.getChannel().position();
+            switch (seekMode) {
+                case ENQUIRE:
+                    break;
+                case CURRENT:
+                    if (offset != 0) {
+                        inputStream.getChannel().position(position + offset);
+                    }
+                    break;
+                case START:
+                    inputStream.getChannel().position(offset);
+                    break;
+                case END:
+                    throw RInternalError.unimplemented();
+
+            }
+            return position;
+        }
     }
 
     private static class FileWriteBinaryConnection extends DelegateWriteRConnection implements ReadWriteHelper {
-        private FileOutputStream outputStream;
+        private final FileOutputStream outputStream;
 
         FileWriteBinaryConnection(FileRConnection base, boolean append) throws IOException {
             super(base);
@@ -366,8 +403,13 @@ public class FileConnections {
         @Override
         public long seek(long offset, SeekMode seekMode, SeekRWMode seekRWMode) throws IOException {
             long result = raf.getFilePointer();
-            if (seekMode != SeekMode.START) {
-                throw RError.nyi(null, "seek mode");
+            switch (seekMode) {
+                case ENQUIRE:
+                    return result;
+                case START:
+                    break;
+                default:
+                    throw RError.nyi(RError.SHOW_CALLER, "seek mode");
             }
             switch (seekRWMode) {
                 case LAST:

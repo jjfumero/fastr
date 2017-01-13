@@ -49,11 +49,11 @@ public enum FastROptions {
     LoadBase("Load base package", true),
     PrintComplexLookups("Print a message for each non-trivial variable lookup", false),
     FullPrecisionSum("Use 128 bit arithmetic in sum builtin", false),
-    LoadPkgSourcesIndex("Load R package sources index", true),
     InvisibleArgs("Argument writes do not trigger state transitions", true),
     RefCountIncrementOnly("Disable reference count decrements for experimental state transition implementation", false),
     UseInternalGraphics("Whether the internal (Java) graphics subsystem should be used", false),
     UseSpecials("Whether the fast-path special call nodes should be created for simple enough arguments.", true),
+    ForceSources("Generate source sections for unserialized code", false),
 
     // Promises optimizations
     EagerEval("If enabled, overrides all other EagerEval switches (see EagerEvalHelper)", false),

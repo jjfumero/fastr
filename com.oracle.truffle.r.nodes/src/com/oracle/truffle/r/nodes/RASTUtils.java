@@ -33,13 +33,13 @@ import com.oracle.truffle.r.nodes.access.ReadVariadicComponentNode;
 import com.oracle.truffle.r.nodes.access.variables.ReadVariableNode;
 import com.oracle.truffle.r.nodes.builtin.RBuiltinNode;
 import com.oracle.truffle.r.nodes.function.PromiseNode.VarArgNode;
-import com.oracle.truffle.r.nodes.function.RCallBaseNode;
 import com.oracle.truffle.r.nodes.function.RCallNode;
 import com.oracle.truffle.r.nodes.function.RCallSpecialNode;
 import com.oracle.truffle.r.nodes.function.WrapArgumentBaseNode;
 import com.oracle.truffle.r.nodes.function.WrapArgumentNode;
 import com.oracle.truffle.r.runtime.ArgumentsSignature;
 import com.oracle.truffle.r.runtime.RInternalError;
+import com.oracle.truffle.r.runtime.Utils;
 import com.oracle.truffle.r.runtime.context.RContext;
 import com.oracle.truffle.r.runtime.data.RDataFactory;
 import com.oracle.truffle.r.runtime.data.REmpty;
@@ -53,6 +53,7 @@ import com.oracle.truffle.r.runtime.nodes.RInstrumentableNode;
 import com.oracle.truffle.r.runtime.nodes.RNode;
 import com.oracle.truffle.r.runtime.nodes.RSyntaxCall;
 import com.oracle.truffle.r.runtime.nodes.RSyntaxConstant;
+import com.oracle.truffle.r.runtime.nodes.RSyntaxElement;
 import com.oracle.truffle.r.runtime.nodes.RSyntaxFunction;
 import com.oracle.truffle.r.runtime.nodes.RSyntaxLookup;
 import com.oracle.truffle.r.runtime.nodes.RSyntaxNode;
@@ -96,7 +97,7 @@ public class RASTUtils {
     }
 
     @TruffleBoundary
-    public static RSyntaxNode getOriginalCall(Node node) {
+    public static RSyntaxElement getOriginalCall(Node node) {
         Node p = node.getParent();
         while (p != null) {
             if (p instanceof RBuiltinNode) {
@@ -144,7 +145,7 @@ public class RASTUtils {
             return value;
         } else if (element instanceof RSyntaxLookup) {
             String id = ((RSyntaxLookup) element).getIdentifier();
-            assert id == id.intern() : element;
+            assert Utils.isInterned(id);
             return RDataFactory.createSymbol(id);
         } else {
             assert element instanceof RSyntaxCall || element instanceof RSyntaxFunction;
@@ -163,7 +164,7 @@ public class RASTUtils {
             return RDataFactory.createSymbolInterned(rvcn.getPrintForm());
         } else {
             String id = ((ReadVariableNode) readVariableNode).getIdentifier();
-            assert id == id.intern();
+            assert Utils.isInterned(id);
             return RDataFactory.createSymbol(id);
         }
     }
@@ -212,33 +213,19 @@ public class RASTUtils {
      * Create an {@link RCallNode}. Where {@code fn} is either a:
      * <ul>
      * <li>{@link RFunction}\
-     * <li>{@code ConstantFunctionNode}</li>
-     * <li>{@code ConstantStringNode}</li>
-     * <li>{@link ReadVariableNode}</li>
-     * <li>{@link RCallNode}</li>
-     * <li>GroupDispatchNode</li>
+     * <li>{@code RNode}</li>
      * </ul>
      */
     @TruffleBoundary
-    public static RSyntaxNode createCall(Object fna, boolean sourceUnavailable, ArgumentsSignature signature, RSyntaxNode... arguments) {
-        Object fn = fna;
-        if (fn instanceof Node) {
-            fn = unwrap(fn);
-        }
-        if (fn instanceof ConstantNode) {
-            fn = ((ConstantNode) fn).getValue();
-        }
-        SourceSection sourceSection = sourceUnavailable ? RSyntaxNode.SOURCE_UNAVAILABLE : RSyntaxNode.EAGER_DEPARSE;
-        if (fn instanceof ReadVariableNode) {
-            return RCallSpecialNode.createCall(sourceSection, (ReadVariableNode) fn, signature, arguments);
-        } else if (fn instanceof RCallBaseNode) {
-            return RCallSpecialNode.createCall(sourceSection, (RCallBaseNode) fn, signature, arguments);
+    public static RSyntaxNode createCall(Object fn, boolean sourceUnavailable, ArgumentsSignature signature, RSyntaxNode... arguments) {
+        RNode fnNode;
+        if (fn instanceof RFunction) {
+            fnNode = ConstantNode.create(fn);
         } else {
-            // apart from RFunction, this of course would not make much sense if trying to evaluate
-            // this call, yet it's syntactically possible, for example as a result of:
-            // f<-function(x,y) sys.call(); x<-f(7, 42); x[c(2,3)]
-            return RCallSpecialNode.createCall(sourceSection, ConstantNode.create(fn), signature, arguments);
+            fnNode = (RNode) unwrap(fn);
         }
+        SourceSection sourceSection = sourceUnavailable ? RSyntaxNode.SOURCE_UNAVAILABLE : RSyntaxNode.LAZY_DEPARSE;
+        return RCallSpecialNode.createCall(sourceSection, fnNode, signature, arguments);
     }
 
     @TruffleBoundary

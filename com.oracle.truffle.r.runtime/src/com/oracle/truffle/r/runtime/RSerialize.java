@@ -5,7 +5,7 @@
  *
  * Copyright (c) 1995-2012, The R Core Team
  * Copyright (c) 2003, The R Foundation
- * Copyright (c) 2013, 2016, Oracle and/or its affiliates
+ * Copyright (c) 2013, 2017, Oracle and/or its affiliates
  *
  * All rights reserved.
  */
@@ -13,35 +13,33 @@ package com.oracle.truffle.r.runtime;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.lang.ref.WeakReference;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
 
 import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.frame.MaterializedFrame;
-import com.oracle.truffle.api.source.Source;
+import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.r.runtime.conn.RConnection;
-import com.oracle.truffle.r.runtime.context.Engine.ParseException;
 import com.oracle.truffle.r.runtime.context.RContext;
 import com.oracle.truffle.r.runtime.data.RArgsValuesAndNames;
 import com.oracle.truffle.r.runtime.data.RAttributable;
-import com.oracle.truffle.r.runtime.data.RAttributeProfiles;
-import com.oracle.truffle.r.runtime.data.RAttributes;
-import com.oracle.truffle.r.runtime.data.RAttributes.RAttribute;
+import com.oracle.truffle.r.runtime.data.RAttributesLayout;
 import com.oracle.truffle.r.runtime.data.RComplex;
 import com.oracle.truffle.r.runtime.data.RComplexVector;
 import com.oracle.truffle.r.runtime.data.RDataFactory;
@@ -67,14 +65,19 @@ import com.oracle.truffle.r.runtime.data.RSymbol;
 import com.oracle.truffle.r.runtime.data.RTypedValue;
 import com.oracle.truffle.r.runtime.data.RUnboundValue;
 import com.oracle.truffle.r.runtime.data.RVector;
+import com.oracle.truffle.r.runtime.data.model.RAbstractComplexVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractDoubleVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractIntVector;
+import com.oracle.truffle.r.runtime.data.model.RAbstractListVector;
+import com.oracle.truffle.r.runtime.data.model.RAbstractLogicalVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractRawVector;
+import com.oracle.truffle.r.runtime.data.model.RAbstractStringVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractVector;
 import com.oracle.truffle.r.runtime.env.REnvironment;
+import com.oracle.truffle.r.runtime.env.frame.FrameSlotChangeMonitor;
+import com.oracle.truffle.r.runtime.ffi.DLL;
 import com.oracle.truffle.r.runtime.gnur.SEXPTYPE;
-import com.oracle.truffle.r.runtime.instrument.RPackageSource;
-import com.oracle.truffle.r.runtime.nodes.RBaseNode;
+import com.oracle.truffle.r.runtime.nodes.RCodeBuilder;
 import com.oracle.truffle.r.runtime.nodes.RSyntaxCall;
 import com.oracle.truffle.r.runtime.nodes.RSyntaxConstant;
 import com.oracle.truffle.r.runtime.nodes.RSyntaxElement;
@@ -187,7 +190,7 @@ public class RSerialize {
          * {@code true} iff we are saving the source from the deparse of an unserialized function
          * (for debugging later).
          */
-        private boolean saveDeparse;
+        boolean saveDeparse;
 
         /**
          * {@code ...getNamespace} in "namespace.R", used to callback to handle a
@@ -324,26 +327,6 @@ public class RSerialize {
         return result;
     }
 
-    @TruffleBoundary
-    public static RPromise unserializePromise(RExpression expr, Object e, Object value) {
-        assert expr.getLength() == 1;
-        RBaseNode rep;
-        if (expr.getDataAt(0) instanceof RLanguage) {
-            RLanguage lang = (RLanguage) expr.getDataAt(0);
-            rep = lang.getRep();
-        } else if (expr.getDataAt(0) instanceof RSymbol) {
-            rep = RContext.getASTBuilder().lookup(RSyntaxNode.SOURCE_UNAVAILABLE, ((RSymbol) expr.getDataAt(0)).getName(), false).asRNode();
-        } else {
-            rep = RContext.getASTBuilder().constant(RSyntaxNode.SOURCE_UNAVAILABLE, expr.getDataAt(0)).asRNode();
-        }
-        if (value == RUnboundValue.instance) {
-            REnvironment env = e == RNull.instance ? REnvironment.baseEnv() : (REnvironment) e;
-            return RDataFactory.createPromise(PromiseState.Explicit, Closure.create(rep), env.getFrame());
-        } else {
-            return RDataFactory.createEvaluatedPromise(Closure.create(rep), value);
-        }
-    }
-
     private static class Input extends Common {
 
         protected final PInputStream stream;
@@ -360,13 +343,9 @@ public class RSerialize {
         protected String functionName;
 
         /**
-         * We need to know whether we are unserializing a {@link SEXPTYPE#CLOSXP} as we do not want
-         * convert embedded instances of {@link SEXPTYPE#LANGSXP} into ASTs.
-         */
-        private int closureDepth;
-        /**
-         * For formula, the same logic applies as we only want to convert to an RFormula when
-         * langDepth is zero.
+         * We need to know whether we are unserializing a {@link SEXPTYPE#CLOSXP},
+         * {@link SEXPTYPE#LANGSXP} or {@link SEXPTYPE#PROMSXP} as we do not want convert embedded
+         * instances of {@link SEXPTYPE#LANGSXP} into ASTs.
          */
         private int langDepth;
 
@@ -382,7 +361,6 @@ public class RSerialize {
             super(hook);
             this.packageName = packageName;
             this.functionName = functionName;
-            this.closureDepth = 0;
             byte[] buf = new byte[2];
             is.read(buf);
             switch (buf[0]) {
@@ -430,9 +408,8 @@ public class RSerialize {
         private void incDepth(SEXPTYPE type) {
             switch (type) {
                 case CLOSXP:
-                    closureDepth++;
-                    break;
                 case LANGSXP:
+                case PROMSXP:
                     langDepth++;
                     break;
                 default:
@@ -480,8 +457,12 @@ public class RSerialize {
                      * only used in a warning message in the unlikely event that the namespace
                      * cannot be found.
                      */
-                    Object r = RContext.getEngine().evalFunction(contextState.getDotDotFindNamespace(), null, null, null, s, "");
-                    return checkResult(addReadRef(r));
+                    // fast path through getRegisteredNamespace
+                    Object namespace = REnvironment.getRegisteredNamespace(s.getDataAt(0));
+                    if (namespace == null) {
+                        namespace = RContext.getEngine().evalFunction(contextState.getDotDotFindNamespace(), null, null, null, s, "");
+                    }
+                    return checkResult(addReadRef(namespace));
                 }
 
                 case PERSISTSXP: {
@@ -565,21 +546,11 @@ public class RSerialize {
                     }
                     Object carItem = readItem();
                     Object cdrItem = readItem();
-                    RPairList pairList = RDataFactory.createPairList(carItem, cdrItem, tagItem, type);
-                    result = pairList;
-                    if (attrItem != RNull.instance) {
-                        /*
-                         * TODO Currently we are losing attributes on CLOSXP (and LANGSXP) objects
-                         * because this code places the attributes on the pairList and not on the
-                         * RFunction object we eventually convert the pairlist into.
-                         */
-                        setAttributes(pairList, attrItem);
-                    }
 
                     // Unlike GnuR the different types require some special treatment
                     switch (type) {
                         case CLOSXP: {
-                            closureDepth--;
+                            langDepth--;
                             /*
                              * Must convert the RPairList to a FastR AST. We could convert to an AST
                              * directly, but it is easier and more robust to deparse and reparse.
@@ -587,27 +558,19 @@ public class RSerialize {
                              * level or not (and they are not always at the top in the default
                              * packages)
                              */
-                            RPairList rpl = (RPairList) result;
                             if (FastROptions.debugMatches("printUclosure")) {
-                                Debug.printClosure(rpl);
+                                RPairList pairList = RDataFactory.createPairList(carItem, cdrItem, tagItem, type);
+                                result = pairList;
+                                if (attrItem != RNull.instance) {
+                                    setAttributes(pairList, attrItem);
+                                }
+                                Debug.printClosure(pairList);
                             }
-                            Map<String, Object> constants = new HashMap<>();
-                            String deparse = RDeparse.deparseDeserialize(constants, rpl);
-                            try {
-                                /*
-                                 * The tag of result is the enclosing environment (from
-                                 * NAMESPACESEXP) for the function. However the namespace is locked,
-                                 * so can't just eval there (and overwrite the promise), so we fix
-                                 * the enclosing frame up on return.
-                                 */
-                                MaterializedFrame enclosingFrame = ((REnvironment) rpl.getTag()).getFrame();
-                                RFunction func = parseFunction(constants, deparse, enclosingFrame, currentFunctionName);
-
-                                RAttributes.copyAttributes(func, rpl.getAttributes());
-                                result = func;
-                            } catch (Throwable ex) {
-                                throw new RInternalError(ex, "unserialize - failed to eval deparsed closure");
+                            RFunction func = PairlistDeserializer.processFunction(carItem, cdrItem, tagItem, currentFunctionName, packageName);
+                            if (attrItem != RNull.instance) {
+                                setAttributes(func, attrItem);
                             }
+                            result = func;
                             break;
                         }
 
@@ -619,61 +582,69 @@ public class RSerialize {
                              * the CLOSXP case, the entire structure is deparsed at the end. Ditto
                              * for LANGSXP when specifying a formula
                              */
-                            if (closureDepth == 0 && langDepth == 0) {
-                                RPairList pl = (RPairList) result;
-                                Map<String, Object> constants = new HashMap<>();
-                                String deparse = RDeparse.deparseDeserialize(constants, pl);
-                                RExpression expr = parse(constants, deparse);
-                                assert expr.getLength() == 1;
-                                result = expr.getDataAt(0);
-                                RAttributes attrs = pl.getAttributes();
-                                if (result instanceof RAttributable) {
-                                    RAttributes.copyAttributes((RAttributable) result, attrs);
+                            if (langDepth == 0) {
+                                RLanguage lang = PairlistDeserializer.processLanguage(carItem, cdrItem, tagItem);
+                                if (attrItem != RNull.instance) {
+                                    setAttributes(lang, attrItem);
+                                }
+                                result = lang;
+                            } else {
+                                RPairList pairList = RDataFactory.createPairList(carItem, cdrItem, tagItem, type);
+                                result = pairList;
+                                if (attrItem != RNull.instance) {
+                                    setAttributes(pairList, attrItem);
                                 }
                             }
                             break;
                         }
 
                         case PROMSXP: {
-                            RPairList pl = (RPairList) result;
+                            langDepth--;
                             /*
                              * tag: environment for eval (or RNull if evaluated), car: value:
                              * RUnboundValue if not evaluated, cdr: expression
                              */
-                            Map<String, Object> constants = new HashMap<>();
-                            String deparse = RDeparse.deparseDeserialize(constants, pl.cdr());
-                            RExpression expr = parse(constants, deparse);
-                            assert expr.getLength() == 1;
-                            result = unserializePromise(expr, pl.getTag(), pl.car());
+                            result = PairlistDeserializer.processPromise(carItem, cdrItem, tagItem);
                             break;
                         }
 
                         case DOTSXP: {
-                            RPairList pl = (RPairList) result;
-                            int len = pl.getLength();
+                            RPairList pairList = RDataFactory.createPairList(carItem, cdrItem, tagItem, type);
+                            int len = pairList.getLength();
                             Object[] values = new Object[len];
                             String[] names = new String[len];
                             for (int i = 0; i < len; i++) {
-                                values[i] = pl.car();
-                                if (pl.getTag() != RNull.instance) {
-                                    names[i] = ((RSymbol) pl.getTag()).getName();
+                                values[i] = pairList.car();
+                                if (pairList.getTag() != RNull.instance) {
+                                    names[i] = ((RSymbol) pairList.getTag()).getName();
                                 }
                                 if (i < len - 1) {
-                                    pl = (RPairList) pl.cdr();
+                                    pairList = (RPairList) pairList.cdr();
                                 }
                             }
                             return new RArgsValuesAndNames(values, ArgumentsSignature.get(names));
                         }
 
                         case LISTSXP:
+                            RPairList pairList = RDataFactory.createPairList(carItem, cdrItem, tagItem, type);
+                            result = pairList;
+                            if (attrItem != RNull.instance) {
+                                /*
+                                 * TODO Currently we are losing attributes on CLOSXP (and LANGSXP)
+                                 * objects because this code places the attributes on the pairList
+                                 * and not on the RFunction object we eventually convert the
+                                 * pairlist into.
+                                 */
+                                setAttributes(pairList, attrItem);
+                            }
                             break;
                     }
 
-                    if (!(result instanceof RScalar)) {
-                        ((RTypedValue) result).setGPBits(levs);
-                    } else {
-                        // for now we only record S4-ness here, and in this case it shoud be 0
+                    if (result instanceof RScalar) {
+                        // for now we only record S4-ness here, and in this case it should be 0
                         assert (levs == 0);
+                    } else {
+                        ((RTypedValue) result).setGPBits(levs);
                     }
                     return checkResult(result);
                 }
@@ -820,7 +791,7 @@ public class RSerialize {
                     Object prot = readItem();
                     long addr = 0;
                     Object tag = readItem();
-                    result = RDataFactory.createExternalPtr(addr, tag, prot);
+                    result = RDataFactory.createExternalPtr(new DLL.SymbolHandle(addr), tag, prot);
                     addReadRef(result);
                     break;
                 }
@@ -867,80 +838,6 @@ public class RSerialize {
             return result;
         }
 
-        private RExpression parse(Map<String, Object> constants, String deparseRaw) throws IOException {
-            try {
-                Source source = RSource.fromPackageTextInternal(deparseRaw, packageName);
-                return RContext.getEngine().parse(constants, source);
-            } catch (Throwable ex) {
-                /*
-                 * Denotes a deparse/eval error, which is an unrecoverable bug, except in the
-                 * special case where we are just saving package sources.
-                 */
-                saveDeparseResult(deparseRaw, true);
-                if (!contextState.saveDeparse) {
-                    throw new RInternalError(ex, "internal deparse error - see file DEPARSE_ERROR");
-                } else {
-                    return null;
-                }
-            }
-        }
-
-        private RFunction parseFunction(Map<String, Object> constants, String deparseRaw, MaterializedFrame enclosingFrame, String currentFunctionName) throws IOException {
-            try {
-                String sourcePath = null;
-                String deparse = deparseRaw;
-                /*
-                 * To disambiguate identical saved deparsed files in different packages add a header
-                 * line
-                 */
-                deparse = "# deparsed from package: " + packageName + "\n" + deparse;
-                if (contextState.saveDeparse) {
-                    saveDeparseResult(deparse, false);
-                } else {
-                    sourcePath = RPackageSource.lookup(deparse);
-                }
-                Source source;
-                String name;
-                if (sourcePath == null) {
-                    source = RSource.fromPackageTextInternalWithName(deparse, packageName, currentFunctionName);
-                    name = currentFunctionName;
-                } else {
-                    source = RSource.fromFileName(deparse, sourcePath);
-                    // Located a function source file from which we can retrieve the function name
-                    name = RPackageSource.decodeName(sourcePath);
-                }
-                return RContext.getEngine().parseFunction(constants, name, source, enclosingFrame);
-            } catch (Throwable ex) {
-                /*
-                 * Denotes a deparse/eval error, which is an unrecoverable bug, except in the
-                 * special case where we are just saving package sources.
-                 */
-                saveDeparseResult(deparseRaw, true);
-                if (!contextState.saveDeparse) {
-                    throw new RInternalError(ex, "internal deparse error - see file DEPARSE_ERROR");
-                } else {
-                    try {
-                        return RContext.getEngine().parseFunction(constants, "", FAILED_DEPARSE_FUNCTION_SOURCE, enclosingFrame);
-                    } catch (ParseException e) {
-                        throw RInternalError.shouldNotReachHere();
-                    }
-                }
-            }
-        }
-
-        private void saveDeparseResult(String deparse, boolean isError) throws IOException {
-            if (contextState.saveDeparse) {
-                RPackageSource.deparsed(deparse, isError);
-            } else if (isError) {
-                try (FileWriter wr = new FileWriter(new File(new File(REnvVars.rHome()), "DEPARSE" + (isError ? "_ERROR" : "")))) {
-                    wr.write(deparse);
-                }
-            }
-        }
-
-        private static final String FAILED_DEPARSE_FUNCTION = "function(...) stop(\"FastR error: proxy for lazily loaded function that did not deparse/parse\")";
-        private static final Source FAILED_DEPARSE_FUNCTION_SOURCE = RSource.fromTextInternal(FAILED_DEPARSE_FUNCTION, RSource.Internal.DEPARSE_ERROR);
-
         /**
          * GnuR uses a pairlist to represent attributes, whereas FastR uses the abstract RAttributes
          * class. FastR also uses different types to represent data/frame and factor which is
@@ -948,6 +845,7 @@ public class RSerialize {
          * unusable, so we don't go to the trouble of converting the {@link RIntVector}
          * representation into an {@link RConnection}.
          */
+        @TruffleBoundary
         private static Object setAttributes(final Object object, Object attr) {
             RAttributable rAttributable = (RAttributable) object;
             RPairList pl = (RPairList) attr;
@@ -1084,8 +982,9 @@ public class RSerialize {
                     Object car = readBCLang(SEXPTYPE.mapInt(stream.readInt()), reps);
                     Object cdr = readBCLang(SEXPTYPE.mapInt(stream.readInt()), reps);
                     Object ans = RDataFactory.createPairList(car, cdr, tag, type);
-                    if (pos >= 0)
+                    if (pos >= 0) {
                         reps[pos] = ans;
+                    }
                     return ans;
                 }
                 default: {
@@ -1290,7 +1189,7 @@ public class RSerialize {
     }
 
     private static class XdrOutputFormat extends POutputStream {
-        private byte[] buf;
+        private final byte[] buf;
         private int offset;
 
         XdrOutputFormat(OutputStream os) {
@@ -1395,14 +1294,15 @@ public class RSerialize {
     public static final int ASCII_HEX = 2;
     public static final int BINARY = 3;
 
-    private static class Output extends Common {
+    private static final class Output extends Common {
 
-        private State state;
-        protected final POutputStream stream;
-        private int version;
+        private final State state;
+        private final POutputStream stream;
+        private final int version;
 
         private Output(OutputStream os, int format, int version, CallHook hook) throws IOException {
             super(hook);
+            this.state = new PLState();
             this.version = version;
             switch (format) {
                 case ASCII:
@@ -1415,8 +1315,7 @@ public class RSerialize {
             }
         }
 
-        private void serialize(State s, Object obj) throws IOException {
-            this.state = s;
+        private void serialize(Object obj) throws IOException {
             switch (version) {
                 case DEFAULT_VERSION:
                     stream.writeInt(version);
@@ -1432,22 +1331,30 @@ public class RSerialize {
         }
 
         private static SEXPTYPE saveSpecialHook(Object item) {
-            if (item == RNull.instance)
+            if (item == RNull.instance) {
                 return SEXPTYPE.NILVALUE_SXP;
-            if (item == REnvironment.emptyEnv())
+            }
+            if (item == REnvironment.emptyEnv()) {
                 return SEXPTYPE.EMPTYENV_SXP;
-            if (item == REnvironment.baseEnv())
+            }
+            if (item == REnvironment.baseEnv()) {
                 return SEXPTYPE.BASEENV_SXP;
-            if (item == REnvironment.globalEnv())
+            }
+            if (item == REnvironment.globalEnv()) {
                 return SEXPTYPE.GLOBALENV_SXP;
-            if (item == RUnboundValue.instance)
+            }
+            if (item == RUnboundValue.instance) {
                 return SEXPTYPE.UNBOUNDVALUE_SXP;
-            if (item == RMissing.instance)
+            }
+            if (item == RMissing.instance) {
                 return SEXPTYPE.MISSINGARG_SXP;
-            if (item == REmpty.instance)
+            }
+            if (item == REmpty.instance) {
                 return SEXPTYPE.MISSINGARG_SXP;
-            if (item == REnvironment.baseNamespaceEnv())
+            }
+            if (item == REnvironment.baseNamespaceEnv()) {
                 return SEXPTYPE.BASENAMESPACE_SXP;
+            }
             if (item instanceof RArgsValuesAndNames && ((RArgsValuesAndNames) item).getLength() == 0) {
                 // empty DOTSXP
                 return SEXPTYPE.NILVALUE_SXP;
@@ -1464,11 +1371,10 @@ public class RSerialize {
             }
         }
 
-        private static final RAttributeProfiles attrProfiles = RAttributeProfiles.create();
-
+        @TruffleBoundary
         private static boolean isObject(Object obj) {
             if (obj instanceof RAttributable) {
-                return ((RAttributable) obj).isObject(attrProfiles);
+                return ((RAttributable) obj).isObject();
             } else {
                 return false;
             }
@@ -1528,7 +1434,7 @@ public class RSerialize {
                         }
                         terminatePairList();
                         writeItem(RNull.instance); // hashtab
-                        RAttributes attributes = env.getAttributes();
+                        DynamicObject attributes = env.getAttributes();
                         if (attributes != null) {
                             writeAttributes(attributes);
                         } else {
@@ -1537,7 +1443,7 @@ public class RSerialize {
                     }
                 } else {
                     // flags
-                    RAttributes attributes = null;
+                    DynamicObject attributes = null;
                     if (obj instanceof RAttributable) {
                         RAttributable rattr = (RAttributable) obj;
                         attributes = rattr.getAttributes();
@@ -1854,11 +1760,11 @@ public class RSerialize {
             }
         }
 
-        private void writeAttributes(RAttributes attributes) throws IOException {
+        private void writeAttributes(DynamicObject attributes) throws IOException {
             // have to convert to GnuR pairlist
-            Iterator<RAttribute> iter = attributes.iterator();
+            Iterator<RAttributesLayout.RAttribute> iter = RAttributesLayout.asIterable(attributes).iterator();
             while (iter.hasNext()) {
-                RAttribute attr = iter.next();
+                RAttributesLayout.RAttribute attr = iter.next();
                 // name is the tag of the virtual pairlist
                 // value is the car
                 // next is the cdr
@@ -1916,12 +1822,7 @@ public class RSerialize {
      */
     private abstract static class State {
 
-        @SuppressWarnings("unused") protected final Output output;
-        private Map<String, RSymbol> symbolMap = new HashMap<>();
-
-        private State(Output output) {
-            this.output = output;
-        }
+        private final Map<String, RSymbol> symbolMap = new HashMap<>();
 
         /**
          * Pushes a new virtual pairlist (no type) onto the stack. An untyped pairlist is subject to
@@ -2029,11 +1930,7 @@ public class RSerialize {
      */
     private static class PLState extends State {
         private static final RPairList NULL = RDataFactory.createPairList();
-        private Deque<RPairList> active = new LinkedList<>();
-
-        private PLState(Output output) {
-            super(output);
-        }
+        private final Deque<RPairList> active = new LinkedList<>();
 
         @Override
         public State openPairList() {
@@ -2183,45 +2080,7 @@ public class RSerialize {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try {
             Output output = new Output(out, type, version, (CallHook) refhook);
-            State state = new PLState(output);
-            output.serialize(state, obj);
-            return out.toByteArray();
-        } catch (IOException ex) {
-            throw RInternalError.shouldNotReachHere();
-        }
-    }
-
-    @TruffleBoundary
-    public static byte[] serializePromiseRep(RPromise promise) {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        try {
-            Output output = new Output(out, XDR, DEFAULT_VERSION, null);
-            State state = new PLState(output);
-            state.openPairList();
-            new SerializeVisitor(state).accept(promise.getRep().asRSyntaxNode());
-            Object res = state.closePairList();
-            if (res instanceof RPairList) {
-                state.convertUnboundValues((RPairList) res);
-            }
-            output.serialize(state, res);
-            return out.toByteArray();
-        } catch (IOException ex) {
-            throw RInternalError.shouldNotReachHere();
-        }
-    }
-
-    @TruffleBoundary
-    public static byte[] serializeFunctionNonEnv(RFunction fn) {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        try {
-            Output output = new Output(out, XDR, DEFAULT_VERSION, null);
-            State state = new PLState(output);
-            state.openPairList(SEXPTYPE.CLOSXP);
-            serializeFunctionDefinition(state, (RSyntaxFunction) fn.getRootNode());
-            Object res = state.closePairList();
-            // CLOSXP-type ensures that the list is not shrunk
-            state.convertUnboundValues((RPairList) res);
-            output.serialize(state, res);
+            output.serialize(obj);
             return out.toByteArray();
         } catch (IOException ex) {
             throw RInternalError.shouldNotReachHere();
@@ -2231,8 +2090,7 @@ public class RSerialize {
     @TruffleBoundary
     public static void serialize(RConnection conn, Object obj, int type, int version, Object refhook) throws IOException {
         Output output = new Output(conn.getOutputStream(), type, version, (CallHook) refhook);
-        State state = new PLState(output);
-        output.serialize(state, obj);
+        output.serialize(obj);
     }
 
     private static class Debug {
@@ -2521,5 +2379,136 @@ public class RSerialize {
         new SerializeVisitor(state).accept(promise.getRep().asRSyntaxNode());
         state.setCdr(state.closePairList());
         return state.closePairList();
+    }
+
+    /**
+     * A collection of static functions that will transform a pairlist into an AST using the
+     * {@link RCodeBuilder}.
+     */
+    private static final class PairlistDeserializer {
+
+        public static RFunction processFunction(Object car, Object cdr, Object tag, String functionName, String packageName) {
+            // car == arguments, cdr == body, tag == environment
+
+            REnvironment environment = (REnvironment) tag;
+            MaterializedFrame enclosingFrame = environment.getFrame();
+            RootCallTarget callTarget = RContext.getASTBuilder().rootFunction(RSyntaxNode.LAZY_DEPARSE, processArguments(car), processBody(cdr), functionName);
+
+            FrameSlotChangeMonitor.initializeEnclosingFrame(callTarget.getRootNode().getFrameDescriptor(), enclosingFrame);
+            RFunction func = RDataFactory.createFunction(functionName, packageName, callTarget, null, enclosingFrame);
+
+            RContext.getRRuntimeASTAccess().checkDebugRequest(func);
+
+            /*
+             * TODO: this is missing the code that registers sources with RPackageSource!
+             */
+            return func;
+        }
+
+        public static RLanguage processLanguage(Object car, Object cdr, Object tag) {
+            return RDataFactory.createLanguage(processCall(car, cdr, tag).asRNode());
+        }
+
+        public static RPromise processPromise(Object car, Object cdr, Object tag) {
+            // car == value, cdr == expression, tag == environment
+
+            Closure closure = Closure.create(processBody(cdr).asRNode());
+            if (car == RUnboundValue.instance) {
+                REnvironment env = tag == RNull.instance ? REnvironment.baseEnv() : (REnvironment) tag;
+                return RDataFactory.createPromise(PromiseState.Explicit, closure, env.getFrame());
+            } else {
+                return RDataFactory.createEvaluatedPromise(closure, car);
+            }
+        }
+
+        private static RSyntaxNode process(Object value, boolean isCallLHS) {
+            if (value instanceof RSymbol) {
+                return RContext.getASTBuilder().lookup(RSyntaxNode.LAZY_DEPARSE, ((RSymbol) value).getName(), isCallLHS);
+            } else if (value instanceof RPairList) {
+                RPairList pl = (RPairList) value;
+                switch (pl.getType()) {
+                    case LANGSXP:
+                        return processCall(pl.car(), pl.cdr(), pl.getTag());
+                    case CLOSXP:
+                        return processFunctionExpression(pl.car(), pl.cdr(), pl.getTag());
+                    default:
+                        throw RInternalError.shouldNotReachHere("unexpected SXP type: " + pl.getType());
+                }
+            } else {
+                assert !(value instanceof RMissing) : "should be handled outside";
+                assert !(value instanceof RLanguage) : "unexpected RLanguage constant in unserialize";
+
+                return RContext.getASTBuilder().constant(RSyntaxNode.LAZY_DEPARSE, unwrapScalarValues(value));
+            }
+        }
+
+        /** Convert single-element atomic vectors to their primitive counterparts. */
+        private static Object unwrapScalarValues(Object value) {
+            if (value instanceof RAbstractVector) {
+                RAbstractVector vector = (RAbstractVector) value;
+                if (vector.getLength() == 1 && (vector.getAttributes() == null || vector.getAttributes().isEmpty())) {
+                    if (vector instanceof RAbstractDoubleVector || vector instanceof RAbstractIntVector || vector instanceof RAbstractStringVector ||
+                                    vector instanceof RAbstractLogicalVector || vector instanceof RAbstractRawVector || vector instanceof RAbstractComplexVector) {
+                        return vector.getDataAtAsObject(0);
+                    }
+                }
+            }
+            return value;
+        }
+
+        private static RSyntaxNode processCall(Object car, Object cdr, @SuppressWarnings("unused") Object tag) {
+            if (car instanceof RSymbol && ((RSymbol) car).getName().equals("function")) {
+                RPairList function = (RPairList) cdr;
+                return processFunctionExpression(function.car(), function.cdr(), function.getTag());
+            }
+            return RContext.getASTBuilder().call(RSyntaxNode.LAZY_DEPARSE, process(car, true), processArguments(cdr));
+        }
+
+        private static RSyntaxNode processFunctionExpression(Object car, Object cdr, @SuppressWarnings("unused") Object tag) {
+            // car == arguments, cdr == body
+            return RContext.getASTBuilder().function(RSyntaxNode.LAZY_DEPARSE, processArguments(car), processBody(cdr), null);
+        }
+
+        private static List<RCodeBuilder.Argument<RSyntaxNode>> processArguments(Object args) {
+            List<RCodeBuilder.Argument<RSyntaxNode>> list = new ArrayList<>();
+
+            RPairList arglist = args instanceof RNull ? null : (RPairList) args;
+            while (arglist != null) {
+                // for each argument: tag == name, car == value
+                String name = arglist.getTag() == RNull.instance ? null : ((RSymbol) arglist.getTag()).getName();
+                RSyntaxNode value = arglist.car() == RMissing.instance ? null : process(arglist.car(), false);
+                list.add(RCodeBuilder.argument(RSyntaxNode.LAZY_DEPARSE, name, value));
+                arglist = next(arglist);
+            }
+
+            return list;
+        }
+
+        private static RPairList next(RPairList pairlist) {
+            if (pairlist.cdr() == RNull.instance) {
+                return null;
+            } else {
+                return (RPairList) pairlist.cdr();
+            }
+        }
+
+        private static RSyntaxNode processBody(Object cdr) {
+            if (cdr instanceof RPairList) {
+                RPairList pl = (RPairList) cdr;
+                switch (pl.getType()) {
+                    case BCODESXP:
+                        RAbstractListVector list = (RAbstractListVector) pl.cdr();
+                        return process(list.getDataAtAsObject(0), false);
+                    case LISTSXP:
+                        assert pl.cdr() == RNull.instance || (pl.cadr() == RNull.instance && pl.cddr() == RNull.instance);
+                        return process(pl.car(), false);
+                    case LANGSXP:
+                        return processCall(pl.car(), pl.cdr(), pl.getTag());
+                    default:
+                        throw RInternalError.shouldNotReachHere("unexpected SXP type in body: " + pl.getType());
+                }
+            }
+            return process(cdr, false);
+        }
     }
 }

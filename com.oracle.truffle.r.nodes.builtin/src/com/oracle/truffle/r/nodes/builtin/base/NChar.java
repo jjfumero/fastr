@@ -31,14 +31,19 @@ import static com.oracle.truffle.r.runtime.builtins.RBuiltinKind.INTERNAL;
 
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
+import com.oracle.truffle.api.profiles.ConditionProfile;
 import com.oracle.truffle.api.profiles.LoopConditionProfile;
+import com.oracle.truffle.r.nodes.attributes.SpecialAttributesFunctions.GetDimAttributeNode;
+import com.oracle.truffle.r.nodes.attributes.SpecialAttributesFunctions.GetDimNamesAttributeNode;
+import com.oracle.truffle.r.nodes.attributes.SpecialAttributesFunctions.GetNamesAttributeNode;
+import com.oracle.truffle.r.nodes.attributes.SpecialAttributesFunctions.SetDimNamesAttributeNode;
 import com.oracle.truffle.r.nodes.builtin.CastBuilder;
 import com.oracle.truffle.r.nodes.builtin.RBuiltinNode;
 import com.oracle.truffle.r.runtime.RRuntime;
 import com.oracle.truffle.r.runtime.builtins.RBuiltin;
-import com.oracle.truffle.r.runtime.data.RAttributeProfiles;
 import com.oracle.truffle.r.runtime.data.RDataFactory;
 import com.oracle.truffle.r.runtime.data.RIntVector;
+import com.oracle.truffle.r.runtime.data.RList;
 import com.oracle.truffle.r.runtime.data.RNull;
 import com.oracle.truffle.r.runtime.data.model.RAbstractIntVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractStringVector;
@@ -65,7 +70,11 @@ public abstract class NChar extends RBuiltinNode {
     @Specialization
     protected RIntVector ncharInt(RAbstractIntVector vector, String type, boolean allowNA, boolean keepNA,
                     @Cached("createCountingProfile()") LoopConditionProfile loopProfile,
-                    @Cached("create()") RAttributeProfiles attrProfiles) {
+                    @Cached("createBinaryProfile()") ConditionProfile nullDimNamesProfile,
+                    @Cached("create()") GetDimAttributeNode getDimNode,
+                    @Cached("create()") SetDimNamesAttributeNode setDimNamesNode,
+                    @Cached("create()") GetDimNamesAttributeNode getDimNamesNode,
+                    @Cached("create()") GetNamesAttributeNode getNamesNode) {
         int len = vector.getLength();
         int[] result = new int[len];
         loopProfile.profileCounted(len);
@@ -77,20 +86,34 @@ public abstract class NChar extends RBuiltinNode {
                 result[i] = (int) (Math.log10(x) + 1); // not the fastest one
             }
         }
-        return RDataFactory.createIntVector(result, true, vector.getNames(attrProfiles));
+        RIntVector resultVector = RDataFactory.createIntVector(result, true, getDimNode.getDimensions(vector), getNamesNode.getNames(vector));
+        RList dimNames = getDimNamesNode.getDimNames(vector);
+        if (nullDimNamesProfile.profile(dimNames != null)) {
+            setDimNamesNode.setDimNames(resultVector, dimNames);
+        }
+        return resultVector;
     }
 
     @SuppressWarnings("unused")
     @Specialization
     protected RIntVector nchar(RAbstractStringVector vector, String type, boolean allowNA, boolean keepNA,
                     @Cached("createCountingProfile()") LoopConditionProfile loopProfile,
-                    @Cached("create()") RAttributeProfiles attrProfiles) {
+                    @Cached("createBinaryProfile()") ConditionProfile nullDimNamesProfile,
+                    @Cached("create()") GetDimAttributeNode getDimNode,
+                    @Cached("create()") SetDimNamesAttributeNode setDimNamesNode,
+                    @Cached("create()") GetDimNamesAttributeNode getDimNamesNode,
+                    @Cached("create()") GetNamesAttributeNode getNamesNode) {
         int len = vector.getLength();
         int[] result = new int[len];
         loopProfile.profileCounted(len);
         for (int i = 0; loopProfile.inject(i < len); i++) {
             result[i] = vector.getDataAt(i).length();
         }
-        return RDataFactory.createIntVector(result, true, vector.getNames(attrProfiles));
+        RIntVector resultVector = RDataFactory.createIntVector(result, true, getDimNode.getDimensions(vector), getNamesNode.getNames(vector));
+        RList dimNames = getDimNamesNode.getDimNames(vector);
+        if (nullDimNamesProfile.profile(dimNames != null)) {
+            setDimNamesNode.setDimNames(resultVector, dimNames);
+        }
+        return resultVector;
     }
 }

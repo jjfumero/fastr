@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,24 +29,21 @@ import com.oracle.truffle.api.dsl.Fallback;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.dsl.TypeSystemReference;
 import com.oracle.truffle.api.interop.TruffleObject;
+import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 import com.oracle.truffle.api.profiles.ValueProfile;
 import com.oracle.truffle.r.nodes.EmptyTypeSystemFlatLayout;
 import com.oracle.truffle.r.nodes.RASTUtils;
 import com.oracle.truffle.r.nodes.access.variables.ReadVariableNode;
-import com.oracle.truffle.r.nodes.attributes.AttributeAccess;
-import com.oracle.truffle.r.nodes.attributes.AttributeAccessNodeGen;
+import com.oracle.truffle.r.nodes.attributes.GetFixedAttributeNode;
 import com.oracle.truffle.r.nodes.unary.CastToVectorNode;
 import com.oracle.truffle.r.nodes.unary.UnaryNode;
 import com.oracle.truffle.r.runtime.RCaller;
 import com.oracle.truffle.r.runtime.RInternalError;
-import com.oracle.truffle.r.runtime.RRuntime;
-import com.oracle.truffle.r.runtime.Utils;
 import com.oracle.truffle.r.runtime.context.RContext;
 import com.oracle.truffle.r.runtime.data.RArgsValuesAndNames;
 import com.oracle.truffle.r.runtime.data.RAttributable;
 import com.oracle.truffle.r.runtime.data.RAttributeStorage;
-import com.oracle.truffle.r.runtime.data.RAttributes;
 import com.oracle.truffle.r.runtime.data.RComplex;
 import com.oracle.truffle.r.runtime.data.RComplexVector;
 import com.oracle.truffle.r.runtime.data.RDataFactory;
@@ -65,7 +62,7 @@ public abstract class ClassHierarchyNode extends UnaryNode {
 
     private static final RStringVector truffleObjectClassHeader = RDataFactory.createStringVectorFromScalar("truffle.object");
 
-    @Child private AttributeAccess access;
+    @Child private GetFixedAttributeNode access;
     @Child private S4Class s4Class;
 
     private final boolean withImplicitTypes;
@@ -121,23 +118,24 @@ public abstract class ClassHierarchyNode extends UnaryNode {
                     @Cached("createBinaryProfile()") ConditionProfile attrStorageProfile, //
                     @Cached("createClassProfile()") ValueProfile argProfile) {
 
-        RAttributes attributes;
-        RAttributable profiledArg;
+        DynamicObject attributes;
         if (attrStorageProfile.profile(arg instanceof RAttributeStorage)) {
             // Note: the seemingly unnecessary cast is here to ensure the method can be inlined
+            // Note2: the attrStorageProfile and cast is better at helping compiler to inline
+            // 'getAttributes' than just the ValueProfile in else branch, which degrades when it
+            // sees two different classes
             attributes = ((RAttributeStorage) arg).getAttributes();
         } else {
-            profiledArg = argProfile.profile(arg);
-            attributes = profiledArg.getAttributes();
+            attributes = argProfile.profile(arg).getAttributes();
         }
         if (noAttributesProfile.profile(attributes != null)) {
             if (access == null) {
                 CompilerDirectives.transferToInterpreterAndInvalidate();
-                access = insert(AttributeAccessNodeGen.create(RRuntime.CLASS_ATTR_KEY));
+                access = insert(GetFixedAttributeNode.createClass());
             }
             RStringVector classHierarchy = (RStringVector) access.execute(attributes);
             if (nullAttributeProfile.profile(classHierarchy != null)) {
-                if (withS4 && arg.isS4() && isS4Profile.profile(classHierarchy.getLength() > 0)) {
+                if (withS4 && argProfile.profile(arg).isS4() && isS4Profile.profile(classHierarchy.getLength() > 0)) {
                     if (s4Class == null) {
                         CompilerDirectives.transferToInterpreterAndInvalidate();
                         s4Class = insert(S4ClassNodeGen.create());
@@ -147,7 +145,7 @@ public abstract class ClassHierarchyNode extends UnaryNode {
                 return classHierarchy;
             }
         }
-        return withImplicitTypes ? arg.getImplicitClass() : null;
+        return withImplicitTypes ? argProfile.profile(arg).getImplicitClass() : null;
     }
 
     protected static boolean isRTypedValue(Object obj) {
@@ -188,8 +186,7 @@ abstract class S4Class extends RBaseNode {
             // the assumption here is that the R function can only return either a String or
             // RStringVector
             s4Extends = (RStringVector) castToVector.execute(
-                            RContext.getEngine().evalFunction(sExtendsForS3Function, methodsEnv.getFrame(), RCaller.create(Utils.getActualCurrentFrame(), RASTUtils.getOriginalCall(this)), null,
-                                            classAttr));
+                            RContext.getEngine().evalFunction(sExtendsForS3Function, methodsEnv.getFrame(), RCaller.create(null, RASTUtils.getOriginalCall(this)), null, classAttr));
             RContext.getInstance().putS4Extends(classAttr, s4Extends);
         }
         return s4Extends;

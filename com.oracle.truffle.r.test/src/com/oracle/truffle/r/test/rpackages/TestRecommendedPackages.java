@@ -39,9 +39,12 @@ import com.oracle.truffle.r.test.TestBase;
  * N.B. The package 'tgz' files have been copied to the com.oracle.truffle.r.test project output
  * directory by the com.oracle.truffle.r.test.native Makefile. to allow them to be packaged into a
  * distribution and avoid any dependency on source paths.
+ *
  */
 public class TestRecommendedPackages extends TestRPackages {
-    private static final String[] DEFAULT_PACKAGES = new String[]{"MASS", "boot", "class", "cluster", "codetools", "lattice", "nnet", "spatial", "survival", "KernSmooth", "Matrix", "foreign", "nlme",
+    // order matters due to dependencies
+    private static final String[] DEFAULT_PACKAGES = new String[]{"codetools", "MASS", "boot", "class", "cluster",
+                    "lattice", "nnet", "spatial", "Matrix", "survival", "KernSmooth", "foreign", "nlme",
                     "rpart"};
     private static String[] packages = DEFAULT_PACKAGES;
 

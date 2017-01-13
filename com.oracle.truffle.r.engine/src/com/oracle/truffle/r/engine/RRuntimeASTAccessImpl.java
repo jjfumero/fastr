@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -33,17 +33,18 @@ import java.util.List;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.RootCallTarget;
+import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.frame.Frame;
 import com.oracle.truffle.api.frame.FrameInstance.FrameAccess;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
+import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.r.engine.shell.RCommand;
 import com.oracle.truffle.r.engine.shell.RscriptCommand;
 import com.oracle.truffle.r.nodes.RASTBuilder;
 import com.oracle.truffle.r.nodes.RASTUtils;
 import com.oracle.truffle.r.nodes.RRootNode;
 import com.oracle.truffle.r.nodes.access.ConstantNode;
-import com.oracle.truffle.r.nodes.access.WriteVariableNode;
 import com.oracle.truffle.r.nodes.access.variables.ReadVariableNode;
 import com.oracle.truffle.r.nodes.builtin.RBuiltinNode;
 import com.oracle.truffle.r.nodes.builtin.RBuiltinRootNode;
@@ -54,10 +55,11 @@ import com.oracle.truffle.r.nodes.builtin.helpers.TraceHandling;
 import com.oracle.truffle.r.nodes.control.AbstractLoopNode;
 import com.oracle.truffle.r.nodes.control.BlockNode;
 import com.oracle.truffle.r.nodes.control.IfNode;
-import com.oracle.truffle.r.nodes.control.ReplacementNode;
+import com.oracle.truffle.r.nodes.control.ReplacementDispatchNode;
 import com.oracle.truffle.r.nodes.function.FunctionDefinitionNode;
 import com.oracle.truffle.r.nodes.function.FunctionExpressionNode;
 import com.oracle.truffle.r.nodes.function.RCallNode;
+import com.oracle.truffle.r.nodes.instrumentation.RInstrumentation;
 import com.oracle.truffle.r.runtime.Arguments;
 import com.oracle.truffle.r.runtime.ArgumentsSignature;
 import com.oracle.truffle.r.runtime.RArguments;
@@ -66,13 +68,13 @@ import com.oracle.truffle.r.runtime.RDeparse;
 import com.oracle.truffle.r.runtime.RError;
 import com.oracle.truffle.r.runtime.RInternalError;
 import com.oracle.truffle.r.runtime.RRuntimeASTAccess;
+import com.oracle.truffle.r.runtime.RSource;
 import com.oracle.truffle.r.runtime.ReturnException;
 import com.oracle.truffle.r.runtime.Utils;
 import com.oracle.truffle.r.runtime.context.Engine;
 import com.oracle.truffle.r.runtime.context.RContext;
-import com.oracle.truffle.r.runtime.data.RArgsValuesAndNames;
 import com.oracle.truffle.r.runtime.data.RAttributable;
-import com.oracle.truffle.r.runtime.data.RAttributes;
+import com.oracle.truffle.r.runtime.data.RAttributesLayout;
 import com.oracle.truffle.r.runtime.data.RComplex;
 import com.oracle.truffle.r.runtime.data.RDataFactory;
 import com.oracle.truffle.r.runtime.data.RFunction;
@@ -187,7 +189,7 @@ class RRuntimeASTAccessImpl implements RRuntimeASTAccess {
             } else {
                 result = call.getSyntaxArguments()[index - 1];
                 if (result == null) {
-                    result = RSyntaxLookup.createDummyLookup(null, "", false);
+                    result = RSyntaxLookup.createDummyLookup(RSyntaxNode.LAZY_DEPARSE, "", false);
                 }
             }
         } else if (s instanceof RSyntaxFunction) {
@@ -209,9 +211,8 @@ class RRuntimeASTAccessImpl implements RRuntimeASTAccess {
                     result = ((RSyntaxFunction) s).getSyntaxBody();
                     break;
                 case 3:
-                    // TODO: handle srcref properly - for now, clearly mark an erroneous access to
-                    // this piece of data
-                    return new RArgsValuesAndNames(new String[]{"DUMMY UNIMPLEMENTED SRCREF"}, ArgumentsSignature.get("dummy"));
+                    // srcref
+                    return RSource.createSrcRef(s.getLazySourceSection());
                 default:
                     throw RInternalError.shouldNotReachHere();
             }
@@ -272,9 +273,9 @@ class RRuntimeASTAccessImpl implements RRuntimeASTAccess {
     }
 
     private static Object addAttributes(RAttributable result, RList list) {
-        RAttributes attrs = list.getAttributes();
+        DynamicObject attrs = list.getAttributes();
         if (attrs != null && !attrs.isEmpty()) {
-            result.initAttributes(attrs.copy());
+            result.initAttributes(RAttributesLayout.copy(attrs));
         }
         return result;
     }
@@ -364,7 +365,7 @@ class RRuntimeASTAccessImpl implements RRuntimeASTAccess {
                 newNames[i] = names.getDataAt(j);
             }
             // copying is already handled by RShareable
-            rl.setRep(RCallNode.createCall(RSyntaxNode.INTERNAL, ((RCallNode) node).getFunctionNode(), ArgumentsSignature.get(newNames), args.getArguments()));
+            rl.setRep(RCallNode.createCall(RSyntaxNode.INTERNAL, ((RCallNode) node).getFunction(), ArgumentsSignature.get(newNames), args.getArguments()));
         } else {
             throw RInternalError.shouldNotReachHere();
         }
@@ -419,21 +420,21 @@ class RRuntimeASTAccessImpl implements RRuntimeASTAccess {
         while (call.isPromise()) {
             call = call.getParent();
         }
-        RSyntaxNode syntaxNode = call.getSyntaxNode();
-        return RDataFactory.createLanguage(syntaxNode.asRNode());
+        RSyntaxElement syntaxNode = call.getSyntaxNode();
+        return RDataFactory.createLanguage(((RSyntaxNode) syntaxNode).asRNode());
     }
 
     private static RBaseNode checkBuiltin(RBaseNode bn) {
         if (bn instanceof RBuiltinNode) {
-            RSyntaxNode sn = ((RBuiltinNode) bn).getOriginalCall();
-            if (sn == null) {
+            RSyntaxElement se = ((RBuiltinNode) bn).getOriginalCall();
+            if (se == null) {
                 /*
                  * TODO Ideally this never happens but do.call creates trees that make finding the
                  * original call impossible.
                  */
                 return null;
             } else {
-                return (RBaseNode) sn;
+                return (RBaseNode) se;
             }
         } else {
             return bn;
@@ -442,23 +443,10 @@ class RRuntimeASTAccessImpl implements RRuntimeASTAccess {
 
     @Override
     public String getCallerSource(RLanguage rl) {
-        RLanguage elem = rl;
-
-        /*
-         * This checks for the specific structure of replacements, to display the replacement
-         * instead of the "internal" form (with *tmp*, etc.) of the update call.
-         */
-
-        RSyntaxNode sn = (RSyntaxNode) rl.getRep();
-        Node parent = RASTUtils.unwrapParent(sn.asNode());
-        if (parent instanceof WriteVariableNode) {
-            WriteVariableNode wvn = (WriteVariableNode) parent;
-            if (wvn.getParent() instanceof ReplacementNode) {
-                elem = RDataFactory.createLanguage((RNode) wvn.getParent());
-            }
-        }
-
-        String string = RDeparse.deparse(elem, RDeparse.DEFAULT_Cutoff, true, 0, -1);
+        // This checks for the specific structure of replacements
+        RLanguage replacement = ReplacementDispatchNode.getRLanguage(rl);
+        RLanguage elem = replacement == null ? rl : replacement;
+        String string = RDeparse.deparse(elem, RDeparse.DEFAULT_Cutoff, true, RDeparse.KEEPINTEGER, -1);
         return string.split("\n")[0];
     }
 
@@ -513,16 +501,6 @@ class RRuntimeASTAccessImpl implements RRuntimeASTAccess {
             }
         }
         return RNull.instance;
-    }
-
-    @Override
-    public RSyntaxNode[] isReplacementNode(Node node) {
-        if (node instanceof ReplacementNode) {
-            ReplacementNode rn = (ReplacementNode) node;
-            return new RSyntaxNode[]{rn.getLhs(), rn.getRhs()};
-        } else {
-            return null;
-        }
     }
 
     @Override
@@ -649,13 +627,18 @@ class RRuntimeASTAccessImpl implements RRuntimeASTAccess {
                     sresult = RDataFactory.createStringVector(lines, RDataFactory.COMPLETE_VECTOR);
                 }
                 if (status != 0) {
-                    sresult.setAttr("status", RDataFactory.createIntVectorFromScalar(status));
+                    setResultAttr(status, sresult);
                 }
                 return sresult;
             } else {
                 return result;
             }
 
+        }
+
+        @TruffleBoundary
+        private static void setResultAttr(int status, RStringVector sresult) {
+            sresult.setAttr("status", RDataFactory.createIntVectorFromScalar(status));
         }
     }
 
@@ -735,5 +718,16 @@ class RRuntimeASTAccessImpl implements RRuntimeASTAccess {
     @Override
     public String encodeComplex(RComplex x, int digits) {
         return ComplexVectorPrinter.encodeComplex(x, digits);
+    }
+
+    @Override
+    public void checkDebugRequest(RFunction func) {
+        RInstrumentation.checkDebugRequested(func);
+    }
+
+    @SuppressWarnings("rawtypes")
+    @Override
+    public Class<? extends TruffleLanguage> getTruffleRLanguage() {
+        return TruffleRLanguage.class;
     }
 }

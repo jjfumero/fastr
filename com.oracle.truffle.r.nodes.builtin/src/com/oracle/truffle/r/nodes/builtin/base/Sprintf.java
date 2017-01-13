@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -37,6 +37,7 @@ import com.oracle.truffle.r.runtime.builtins.RBuiltin;
 import com.oracle.truffle.r.runtime.data.RArgsValuesAndNames;
 import com.oracle.truffle.r.runtime.data.RDataFactory;
 import com.oracle.truffle.r.runtime.data.RMissing;
+import com.oracle.truffle.r.runtime.data.RNull;
 import com.oracle.truffle.r.runtime.data.RStringVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractDoubleVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractIntVector;
@@ -49,6 +50,11 @@ public abstract class Sprintf extends RBuiltinNode {
     public abstract Object executeObject(String fmt, Object args);
 
     @Child private Sprintf sprintfRecursive;
+
+    @Specialization
+    protected RStringVector sprintf(@SuppressWarnings("unused") RAbstractStringVector fmt, @SuppressWarnings("unused") RNull x) {
+        return RDataFactory.createEmptyStringVector();
+    }
 
     @Specialization
     protected String sprintf(String fmt, @SuppressWarnings("unused") RMissing x) {
@@ -192,7 +198,12 @@ public abstract class Sprintf extends RBuiltinNode {
         return sprintfArgs;
     }
 
-    @Specialization(guards = "!oneElement(args)")
+    @Specialization(guards = {"!oneElement(args)", "hasNull(args)"})
+    protected RStringVector sprintf(@SuppressWarnings("unused") Object fmt, @SuppressWarnings("unused") RArgsValuesAndNames args) {
+        return RDataFactory.createEmptyStringVector();
+    }
+
+    @Specialization(guards = {"!oneElement(args)", "!hasNull(args)"})
     @TruffleBoundary
     protected RStringVector sprintf(String fmt, RArgsValuesAndNames args) {
         Object[] values = args.getArguments();
@@ -223,7 +234,7 @@ public abstract class Sprintf extends RBuiltinNode {
         return sprintfRecursive.executeObject(fmt, args.getArgument(0));
     }
 
-    @Specialization(guards = {"!oneElement(args)"})
+    @Specialization(guards = {"!oneElement(args)", "!hasNull(args)"})
     @TruffleBoundary
     protected RStringVector sprintf(RAbstractStringVector fmt, RArgsValuesAndNames args) {
         if (fmt.getLength() == 0) {
@@ -547,9 +558,9 @@ public abstract class Sprintf extends RBuiltinNode {
 
     private static int number(char[] cs, int i, FormatInfo fi) {
         int j = i;
-        int num = cs[j++] - 48;
+        int num = cs[j++] - '0';
         while (isNumeric(cs[j])) {
-            num = 10 * num + cs[j++];
+            num = 10 * num + (cs[j++] - '0');
         }
         fi.nextChar = j;
         return num;
@@ -571,6 +582,16 @@ public abstract class Sprintf extends RBuiltinNode {
 
     protected boolean oneElement(RArgsValuesAndNames args) {
         return args.getLength() == 1;
+    }
+
+    protected boolean hasNull(RArgsValuesAndNames args) {
+        for (int i = 0; i < args.getLength(); i++) {
+            if (args.getArgument(i) == RNull.instance) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     @TruffleBoundary

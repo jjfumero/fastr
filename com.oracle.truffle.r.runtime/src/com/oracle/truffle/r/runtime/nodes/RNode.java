@@ -27,7 +27,6 @@ import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.instrumentation.Instrumentable;
 import com.oracle.truffle.api.nodes.UnexpectedResultException;
 import com.oracle.truffle.r.runtime.RType;
-import com.oracle.truffle.r.runtime.conn.RConnection;
 import com.oracle.truffle.r.runtime.data.RArgsValuesAndNames;
 import com.oracle.truffle.r.runtime.data.RComplex;
 import com.oracle.truffle.r.runtime.data.RComplexVector;
@@ -65,6 +64,15 @@ import com.oracle.truffle.r.runtime.env.REnvironment;
 public abstract class RNode extends RBaseNode implements RInstrumentableNode {
 
     public abstract Object execute(VirtualFrame frame);
+
+    /**
+     * This function can be called when the result is not needed, and normally just dispatches to
+     * {@link #execute(VirtualFrame)}. Its name does not start with "execute" so that the DSL does
+     * not treat it like an execute function.
+     */
+    public void voidExecute(VirtualFrame frame) {
+        execute(frame);
+    }
 
     public int executeInteger(VirtualFrame frame) throws UnexpectedResultException {
         Object value = execute(frame);
@@ -209,10 +217,6 @@ public abstract class RNode extends RBaseNode implements RInstrumentableNode {
 
     public REnvironment executeREnvironment(VirtualFrame frame) throws UnexpectedResultException {
         return RTypesGen.expectREnvironment(execute(frame));
-    }
-
-    public RConnection executeRConnection(VirtualFrame frame) throws UnexpectedResultException {
-        return RTypesGen.expectRConnection(execute(frame));
     }
 
     public RExpression executeRExpression(VirtualFrame frame) throws UnexpectedResultException {

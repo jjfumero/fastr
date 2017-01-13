@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,88 +22,85 @@
  */
 package com.oracle.truffle.r.nodes.attributes;
 
+import com.oracle.truffle.api.CompilerDirectives;
+import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.nodes.ExplodeLoop;
+import com.oracle.truffle.api.object.DynamicObject;
+import com.oracle.truffle.api.object.Location;
+import com.oracle.truffle.api.object.Shape;
 import com.oracle.truffle.api.profiles.BranchProfile;
-import com.oracle.truffle.r.runtime.RRuntime;
-import com.oracle.truffle.r.runtime.Utils;
-import com.oracle.truffle.r.runtime.data.RAttributes;
-import com.oracle.truffle.r.runtime.nodes.RBaseNode;
+import com.oracle.truffle.api.profiles.ConditionProfile;
+import com.oracle.truffle.api.profiles.ValueProfile;
+import com.oracle.truffle.r.runtime.data.RAttributable;
+import com.oracle.truffle.r.runtime.data.RAttributeStorage;
 
-/**
- * Simple attribute access node that specializes on the position at which the attribute was found
- * last time.
- */
-public abstract class RemoveAttributeNode extends RBaseNode {
+public abstract class RemoveAttributeNode extends AttributeAccessNode {
 
-    protected final String name;
+    @Child RemoveAttributeNode recursive;
 
-    protected RemoveAttributeNode(String name) {
-        this.name = Utils.intern(name);
+    protected RemoveAttributeNode() {
     }
 
-    public static RemoveAttributeNode create(String name) {
-        return RemoveAttributeNodeGen.create(name);
+    public static RemoveAttributeNode create() {
+        return RemoveAttributeNodeGen.create();
     }
 
-    public static RemoveAttributeNode createDim() {
-        return RemoveAttributeNodeGen.create(RRuntime.DIM_ATTR_KEY);
+    public abstract void execute(Object attrs, String name);
+
+    @Specialization(limit = "3", //
+                    guards = {
+                                    "cachedName.equals(name)",
+                                    "shapeCheck(shape, attrs)",
+                                    "location == null"
+                    }, //
+                    assumptions = {
+                                    "shape.getValidAssumption()"
+                    })
+    @SuppressWarnings("unused")
+    protected void removeNonExistantAttr(DynamicObject attrs, String name,
+                    @Cached("name") String cachedName,
+                    @Cached("lookupShape(attrs)") Shape shape,
+                    @Cached("lookupLocation(shape, cachedName)") Location location) {
+        // do nothing
     }
 
-    public static RemoveAttributeNode createDimNames() {
-        return RemoveAttributeNodeGen.create(RRuntime.DIMNAMES_ATTR_KEY);
+    @Specialization
+    @TruffleBoundary
+    protected void removeAttrFallback(DynamicObject attrs, String name) {
+        attrs.delete(name);
     }
 
-    public abstract void execute(RAttributes attr);
-
-    protected boolean nameMatches(RAttributes attr, int index) {
-        /*
-         * The length check is against names.length instead of size, so that the check folds into
-         * the array bounds check.
-         */
-        return index != -1 && attr.size() > index && attr.getNameAtIndex(index) == name;
-    }
-
-    @Specialization(limit = "1", guards = "nameMatches(attr, index)")
-    @ExplodeLoop
-    protected void accessCached(RAttributes attr, //
-                    @Cached("attr.find(name)") int index, //
-                    @Cached("attr.size()") int cachedSize) {
-        attr.setSize(cachedSize - 1);
-        for (int i = index + 1; i < cachedSize; i++) {
-            attr.setNameAtIndex(i - 1, attr.getNameAtIndex(i));
-            attr.setValueAtIndex(i - 1, attr.getValueAtIndex(i));
+    @Specialization
+    protected void removeAttrFromAttributable(RAttributable x, String name,
+                    @Cached("create()") BranchProfile attrNullProfile,
+                    @Cached("createBinaryProfile()") ConditionProfile attrStorageProfile,
+                    @Cached("createClassProfile()") ValueProfile xTypeProfile,
+                    @Cached("create()") BranchProfile emptyAttrProfile) {
+        DynamicObject attributes;
+        if (attrStorageProfile.profile(x instanceof RAttributeStorage)) {
+            attributes = ((RAttributeStorage) x).getAttributes();
+        } else {
+            attributes = xTypeProfile.profile(x).getAttributes();
         }
-        attr.setValueAtIndex(cachedSize - 1, null);
-    }
 
-    @Specialization(limit = "1", guards = "cachedSize == attr.size()")
-    @ExplodeLoop
-    protected void accessCachedSize(RAttributes attr, //
-                    @Cached("attr.size()") int cachedSize, //
-                    @Cached("create()") BranchProfile foundProfile, //
-                    @Cached("create()") BranchProfile notFoundProfile) {
-        for (int i = 0; i < cachedSize; i++) {
-            if (attr.getNameAtIndex(i) == name) {
-                foundProfile.enter();
-                removeAt(attr, i, cachedSize);
-                return;
-            }
+        if (attributes == null) {
+            attrNullProfile.enter();
+            return;
         }
-        notFoundProfile.enter();
-    }
 
-    private static void removeAt(RAttributes attr, int index, int cachedSize) {
-        for (int i = index + 1; i < cachedSize; i++) {
-            attr.setNameAtIndex(i - 1, attr.getNameAtIndex(i));
-            attr.setValueAtIndex(i - 1, attr.getValueAtIndex(i));
+        if (recursive == null) {
+            CompilerDirectives.transferToInterpreterAndInvalidate();
+            recursive = insert(create());
         }
-        attr.setValueAtIndex(cachedSize - 1, null);
+
+        recursive.execute(attributes, name);
+
+        if (attributes.isEmpty()) {
+            emptyAttrProfile.enter();
+            x.initAttributes(null);
+        }
+
     }
 
-    @Specialization(contains = {"accessCached", "accessCachedSize"})
-    protected void access(RAttributes attr) {
-        attr.remove(name);
-    }
 }

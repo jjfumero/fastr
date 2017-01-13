@@ -25,6 +25,7 @@ import platform
 import subprocess
 import shutil
 import mx
+import mx_fastr
 
 def _darwin_extract_realpath(lib, libpath):
     '''
@@ -52,7 +53,10 @@ def _copylib(lib, libpath, target):
         real_libpath = _darwin_extract_realpath(lib, libpath)
     else:
         try:
-            output = subprocess.check_output(['objdump', '-p', libpath])
+            if platform.system() == 'Linux':
+                output = subprocess.check_output(['objdump', '-p', libpath])
+            elif platform.system() == 'SunOS':
+                output = subprocess.check_output(['elfdump', '-d', libpath])
             lines = output.split('\n')
             for line in lines:
                 if 'SONAME' in line:
@@ -114,37 +118,54 @@ def copylib(args):
                         return 0
 
     if os.environ.has_key('FASTR_RELEASE'):
+        if args[0] == 'quadmath' and platform.system() == 'SunOS':
+            return 0
         mx.abort(args[0] + ' not found in PKG_LDFLAGS_OVERRIDE, but required with FASTR_RELEASE')
 
     mx.log(args[0] + ' not found in PKG_LDFLAGS_OVERRIDE, assuming system location')
+    return 0
 
 def updatelib(args):
     '''
-    If we captured a library then, on Darwin, we patch up the references
-    in the target library passed as argument to use @rpath.
+    On Darwin, if we captured a library, then we patch up the references
+    to it to use @rpath, for all the libs in the directory passed as argument .
     args:
-      0 directory containing library
+      0 directory containing libs to patch (and may also contain the patchees)
     '''
+    # These are not captured
     ignore_list = ['R', 'Rblas', 'Rlapack', 'jniboot']
 
-    def ignorelib(name):
+    fastr_libdir = os.path.join(mx_fastr._fastr_suite.dir, 'lib')
+
+
+    def locally_built(name):
         for ignore in ignore_list:
             x = 'lib' + ignore + '.dylib'
             if x == name:
                 return True
         return False
 
+    def get_captured_libs():
+        cap_libs = []
+        for lib in os.listdir(fastr_libdir):
+            if not '.dylib' in lib:
+                # ignore non-libraries
+                continue
+            if locally_built(lib) or os.path.islink(os.path.join(fastr_libdir, lib)):
+                continue
+            cap_libs.append(lib)
+        return cap_libs
+
     libdir = args[0]
-    cap_libs = []
+    cap_libs = get_captured_libs()
     libs = []
     for lib in os.listdir(libdir):
-        if not '.dylib' in lib:
+        if not ('.dylib' in lib or '.so' in lib):
+            # ignore non-libraries
             continue
         if not os.path.islink(os.path.join(libdir, lib)):
             libs.append(lib)
-        if ignorelib(lib) or os.path.islink(os.path.join(libdir, lib)):
-            continue
-        cap_libs.append(lib)
+
     # for each of the libs, check whether they depend
     # on any of the captured libs, @rpath the dependency if so
     for lib in libs:

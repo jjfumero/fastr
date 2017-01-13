@@ -22,8 +22,6 @@
  */
 package com.oracle.truffle.r.nodes.function;
 
-import java.util.Arrays;
-
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
 import com.oracle.truffle.api.frame.VirtualFrame;
@@ -88,28 +86,38 @@ final class PeekLocalVariableNode extends RNode implements RSyntaxLookup {
     public boolean isFunctionLookup() {
         return false;
     }
+
+    @Override
+    public SourceSection getLazySourceSection() {
+        return null;
+    }
 }
 
 public final class RCallSpecialNode extends RCallBaseNode implements RSyntaxNode, RSyntaxCall {
 
-    private static final int NO_RECURSIVE_ARGUMENT_INDEX = -1;
     private static final boolean useSpecials = FastROptions.UseSpecials.getBooleanValue();
 
     // currently cannot be RSourceSectionNode because of TruffleDSL restrictions
-    @CompilationFinal private SourceSection sourceSectionR;
+    @CompilationFinal private SourceSection sourceSection;
 
     @Override
     public void setSourceSection(SourceSection sourceSection) {
         assert sourceSection != null;
-        this.sourceSectionR = sourceSection;
+        this.sourceSection = sourceSection;
+    }
+
+    @Override
+    public SourceSection getLazySourceSection() {
+        return sourceSection;
     }
 
     @Override
     public SourceSection getSourceSection() {
-        return sourceSectionR;
+        RDeparse.ensureSourceSection(this);
+        return sourceSection;
     }
 
-    @Child private ForcePromiseNode functionNode;
+    @Child private RNode functionNode;
     @Child private RNode special;
 
     private final RSyntaxNode[] arguments;
@@ -117,43 +125,61 @@ public final class RCallSpecialNode extends RCallBaseNode implements RSyntaxNode
     private final RFunction expectedFunction;
 
     /**
-     * If this instance is argument of another RCallSpecialNode (parent), then this will be the
-     * index into the parent arguments array, otherwise {@link #NO_RECURSIVE_ARGUMENT_INDEX}.
+     * If this is true, then any bailout should simply be forwarded by re-throwing the exception.
      */
-    private int argumentIndex = NO_RECURSIVE_ARGUMENT_INDEX;
+    private boolean propagateFullCallNeededException;
+
+    /**
+     * If this is non-null, then any bailout should lead to be forwarded by re-throwing the
+     * exception after replacing itself with a proper call node.
+     */
+    private RCallSpecialNode callSpecialParent;
 
     private RCallSpecialNode(SourceSection sourceSection, RNode functionNode, RFunction expectedFunction, RSyntaxNode[] arguments, ArgumentsSignature signature, RNode special) {
-        this.sourceSectionR = sourceSection;
+        this.sourceSection = sourceSection;
         this.expectedFunction = expectedFunction;
         this.special = special;
-        this.functionNode = new ForcePromiseNode(functionNode);
+        this.functionNode = functionNode;
         this.arguments = arguments;
         this.signature = signature;
     }
 
+    /**
+     * This passes {@code true} for the isReplacement parameter and ignores the specified arguments,
+     * i.e., does not modify them in any way before passing it to
+     * {@link RSpecialFactory#create(ArgumentsSignature, RNode[], boolean)}.
+     */
+    public static RSyntaxNode createCallInReplace(SourceSection sourceSection, RNode functionNode, ArgumentsSignature signature, RSyntaxNode[] arguments, int... ignoredArguments) {
+        return createCall(sourceSection, functionNode, signature, arguments, true, ignoredArguments);
+    }
+
     public static RSyntaxNode createCall(SourceSection sourceSection, RNode functionNode, ArgumentsSignature signature, RSyntaxNode[] arguments) {
+        return createCall(sourceSection, functionNode, signature, arguments, false);
+    }
+
+    private static RSyntaxNode createCall(SourceSection sourceSection, RNode functionNode, ArgumentsSignature signature, RSyntaxNode[] arguments, boolean inReplace, int... ignoredArguments) {
         RCallSpecialNode special = null;
         if (useSpecials) {
-            special = tryCreate(sourceSection, functionNode, signature, arguments);
+            special = tryCreate(sourceSection, functionNode, signature, arguments, inReplace, ignoredArguments);
         }
         if (special != null) {
-            if (sourceSection == RSyntaxNode.EAGER_DEPARSE) {
-                RDeparse.ensureSourceSection(special);
-            }
             return special;
         } else {
             return RCallNode.createCall(sourceSection, functionNode, signature, arguments);
         }
     }
 
-    private static RCallSpecialNode tryCreate(SourceSection sourceSection, RNode functionNode, ArgumentsSignature signature, RSyntaxNode[] arguments) {
+    private static RCallSpecialNode tryCreate(SourceSection sourceSection, RNode functionNode, ArgumentsSignature signature, RSyntaxNode[] arguments, boolean inReplace, int[] ignoredArguments) {
         RSyntaxNode syntaxFunction = functionNode.asRSyntaxNode();
         if (!(syntaxFunction instanceof RSyntaxLookup)) {
             // LHS is not a simple lookup -> bail out
             return null;
         }
-        for (RSyntaxNode argument : arguments) {
-            if (!(argument instanceof RSyntaxLookup || argument instanceof RSyntaxConstant || argument instanceof RCallSpecialNode)) {
+        for (int i = 0; i < arguments.length; i++) {
+            if (contains(ignoredArguments, i)) {
+                continue;
+            }
+            if (!(arguments[i] instanceof RSyntaxLookup || arguments[i] instanceof RSyntaxConstant || arguments[i] instanceof RCallSpecialNode)) {
                 // argument is not a simple lookup or constant value or another special -> bail out
                 return null;
             }
@@ -171,17 +197,21 @@ public final class RCallSpecialNode extends RCallBaseNode implements RSyntaxNode
         }
         RNode[] localArguments = new RNode[arguments.length];
         for (int i = 0; i < arguments.length; i++) {
-            if (arguments[i] instanceof RSyntaxLookup) {
-                localArguments[i] = new PeekLocalVariableNode(((RSyntaxLookup) arguments[i]).getIdentifier());
-            } else if (arguments[i] instanceof RSyntaxConstant) {
-                localArguments[i] = RContext.getASTBuilder().process(arguments[i]).asRNode();
+            RSyntaxNode arg = arguments[i];
+            if (inReplace && contains(ignoredArguments, i)) {
+                localArguments[i] = arg.asRNode();
             } else {
-                assert arguments[i] instanceof RCallSpecialNode;
-                ((RCallSpecialNode) arguments[i]).setArgumentIndex(i);
-                localArguments[i] = arguments[i].asRNode();
+                if (arg instanceof RSyntaxLookup) {
+                    localArguments[i] = new PeekLocalVariableNode(((RSyntaxLookup) arg).getIdentifier());
+                } else if (arg instanceof RSyntaxConstant) {
+                    localArguments[i] = RContext.getASTBuilder().process(arg).asRNode();
+                } else {
+                    assert arg instanceof RCallSpecialNode;
+                    localArguments[i] = arg.asRNode();
+                }
             }
         }
-        RNode special = specialCall.create(signature, localArguments);
+        RNode special = specialCall.create(signature, localArguments, inReplace);
         if (special == null) {
             // the factory refused to create a special call -> bail out
             return null;
@@ -189,7 +219,24 @@ public final class RCallSpecialNode extends RCallBaseNode implements RSyntaxNode
         RFunction expectedFunction = RContext.lookupBuiltin(name);
         RInternalError.guarantee(expectedFunction != null);
 
-        return new RCallSpecialNode(sourceSection, functionNode, expectedFunction, arguments, signature, special);
+        RCallSpecialNode callSpecial = new RCallSpecialNode(sourceSection, functionNode, expectedFunction, arguments, signature, special);
+        for (int i = 0; i < arguments.length; i++) {
+            if (!inReplace || !contains(ignoredArguments, i)) {
+                if (arguments[i] instanceof RCallSpecialNode) {
+                    ((RCallSpecialNode) arguments[i]).setCallSpecialParent(callSpecial);
+                }
+            }
+        }
+        return callSpecial;
+    }
+
+    private static boolean contains(int[] ignoredArguments, int index) {
+        for (int i = 0; i < ignoredArguments.length; i++) {
+            if (ignoredArguments[i] == index) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -200,55 +247,50 @@ public final class RCallSpecialNode extends RCallBaseNode implements RSyntaxNode
                 throw RSpecialFactory.throwFullCallNeeded();
             }
             return special.execute(frame);
-        } catch (RecursiveSpecialBailout bailout) {
-            CompilerDirectives.transferToInterpreterAndInvalidate();
-            throwOnRecursiveSpecial();
-            return replace(getRCallNode(rewriteSpecialArgument(bailout))).execute(frame, function);
         } catch (RSpecialFactory.FullCallNeededException e) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            throwOnRecursiveSpecial();
-            return replace(getRCallNode()).execute(frame, function);
+            if (propagateFullCallNeededException) {
+                throw e;
+            }
+            RCallNode callNode = getRCallNode();
+            for (RSyntaxElement arg : arguments) {
+                if (arg instanceof RCallSpecialNode) {
+                    ((RCallSpecialNode) arg).setCallSpecialParent(null);
+                }
+            }
+            if (callSpecialParent != null) {
+                RSyntaxNode[] args = callSpecialParent.arguments;
+                for (int i = 0; i < args.length; i++) {
+                    if (args[i] == this) {
+                        args[i] = callNode;
+                    }
+                }
+                throw e;
+            }
+            return replace(callNode).execute(frame, function);
         }
-    }
-
-    private void throwOnRecursiveSpecial() {
-        if (isRecursiveSpecial()) {
-            throw new RecursiveSpecialBailout(argumentIndex);
-        }
-    }
-
-    private RSyntaxNode[] rewriteSpecialArgument(RecursiveSpecialBailout bailout) {
-        // Note: other arguments that may be specials too, stay specials, their parent node will be
-        // changed in createRCallNode, but we are never going to use the original parent, which is
-        // the 'this.special' node that bailed out.
-        // Note 2: we have to make a copy of the array, because this node may have been shallow
-        // copied and the other copy will keep its copied parent, i.e. bailout exception from here
-        // will not reach the copied parent, but we would rewrite one of its arguments to full-blown
-        // RCallNode. It seems that bailing out happens less frequently than Node.copy, so we do the
-        // copying here.
-        RSyntaxNode[] newArguments = Arrays.copyOf(arguments, arguments.length);
-        RCallSpecialNode arg = (RCallSpecialNode) arguments[bailout.argumentIndex];
-        newArguments[bailout.argumentIndex] = arg.getRCallNode();
-        return newArguments;
-    }
-
-    private boolean isRecursiveSpecial() {
-        // Note: we need to check the parent's parent, because it might have been rewritten by
-        // bailout of some of its other arguments. If parent is special node, then its parent must
-        // be RCallSpecialNode
-        return argumentIndex != NO_RECURSIVE_ARGUMENT_INDEX && getParent() != null && getParent().getParent() instanceof RCallSpecialNode;
     }
 
     private RCallNode getRCallNode(RSyntaxNode[] newArguments) {
-        return RCallNode.createCall(sourceSectionR, functionNode == null ? null : functionNode.getValueNode(), signature, newArguments);
+        return RCallNode.createCall(sourceSection, functionNode, signature, newArguments);
     }
 
     private RCallNode getRCallNode() {
         return getRCallNode(arguments);
     }
 
-    private void setArgumentIndex(int index) {
-        argumentIndex = index;
+    /**
+     * see {@link #propagateFullCallNeededException}.
+     */
+    public void setPropagateFullCallNeededException() {
+        propagateFullCallNeededException = true;
+    }
+
+    /**
+     * see {@link #callSpecialParent}.
+     */
+    private void setCallSpecialParent(RCallSpecialNode call) {
+        callSpecialParent = call;
     }
 
     @Override
@@ -258,8 +300,7 @@ public final class RCallSpecialNode extends RCallBaseNode implements RSyntaxNode
 
     @Override
     public RSyntaxElement getSyntaxLHS() {
-        ForcePromiseNode func = functionNode;
-        return func == null || func.getValueNode() == null ? RSyntaxLookup.createDummyLookup(RSyntaxNode.LAZY_DEPARSE, "FUN", true) : func.getValueNode().asRSyntaxNode();
+        return functionNode == null ? RSyntaxLookup.createDummyLookup(RSyntaxNode.LAZY_DEPARSE, "FUN", true) : functionNode.asRSyntaxNode();
     }
 
     @Override
@@ -270,19 +311,5 @@ public final class RCallSpecialNode extends RCallBaseNode implements RSyntaxNode
     @Override
     public RSyntaxElement[] getSyntaxArguments() {
         return arguments == null ? new RSyntaxElement[]{RSyntaxLookup.createDummyLookup(RSyntaxNode.LAZY_DEPARSE, "...", false)} : arguments;
-    }
-
-    @SuppressWarnings("serial")
-    private static final class RecursiveSpecialBailout extends RuntimeException {
-        public final int argumentIndex;
-
-        RecursiveSpecialBailout(int argumentIndex) {
-            this.argumentIndex = argumentIndex;
-        }
-
-        @Override
-        public synchronized Throwable fillInStackTrace() {
-            return null;
-        }
     }
 }

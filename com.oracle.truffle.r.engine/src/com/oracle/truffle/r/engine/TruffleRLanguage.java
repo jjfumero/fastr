@@ -25,22 +25,21 @@ package com.oracle.truffle.r.engine;
 import java.util.Locale;
 
 import com.oracle.truffle.api.CallTarget;
-import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.Truffle;
 import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.frame.FrameDescriptor;
-import com.oracle.truffle.api.frame.MaterializedFrame;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.instrumentation.Instrumenter;
 import com.oracle.truffle.api.instrumentation.ProvidedTags;
 import com.oracle.truffle.api.instrumentation.StandardTags;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
-import com.oracle.truffle.api.source.Source;
 import com.oracle.truffle.r.engine.interop.RForeignAccessFactoryImpl;
 import com.oracle.truffle.r.nodes.RASTBuilder;
 import com.oracle.truffle.r.nodes.builtin.RBuiltinPackages;
 import com.oracle.truffle.r.nodes.instrumentation.RSyntaxTags;
+import com.oracle.truffle.r.runtime.ExitException;
 import com.oracle.truffle.r.runtime.FastROptions;
 import com.oracle.truffle.r.runtime.RAccuracyInfo;
 import com.oracle.truffle.r.runtime.RError;
@@ -54,7 +53,6 @@ import com.oracle.truffle.r.runtime.context.RContext;
 import com.oracle.truffle.r.runtime.context.RContext.RCloseable;
 import com.oracle.truffle.r.runtime.ffi.Load_RFFIFactory;
 import com.oracle.truffle.r.runtime.ffi.RFFIFactory;
-import com.oracle.truffle.r.runtime.instrument.RPackageSource;
 
 /**
  * Only does the minimum for running under the debugger. It is not completely clear how to correctly
@@ -76,11 +74,20 @@ public final class TruffleRLanguage extends TruffleLanguage<RContext> {
             RAccuracyInfo.initialize();
             RVersionInfo.initialize();
             TempPathName.initialize();
-            RPackageSource.initialize();
 
         } catch (Throwable t) {
             t.printStackTrace();
-            Utils.rSuicide("error during R language initialization");
+            /*
+             * Truffle currently has no distinguished exception to indicate language initialization
+             * failure, so nothing good can come from throwing the exception, which is what
+             * Utils.rSuicide does. For now we catch it and exit the process.
+             */
+            try {
+                Utils.rSuicide("error during R language initialization");
+            } catch (ExitException ex) {
+                System.exit(ex.getStatus());
+            }
+
         }
     }
 
@@ -130,13 +137,13 @@ public final class TruffleRLanguage extends TruffleLanguage<RContext> {
         return null;
     }
 
-    @Override
-    @TruffleBoundary
     @SuppressWarnings("try")
-    protected CallTarget parse(Source source, Node context, String... argumentNames) throws com.oracle.truffle.api.vm.IncompleteSourceException {
+    @Override
+    protected CallTarget parse(ParsingRequest request) throws Exception {
+        CompilerAsserts.neverPartOfCompilation();
         try (RCloseable c = RContext.withinContext(findContext(createFindContextNode()))) {
             try {
-                return RContext.getEngine().parseToCallTarget(source);
+                return RContext.getEngine().parseToCallTarget(request.getSource(), request.getFrame());
             } catch (IncompleteSourceException e) {
                 throw new com.oracle.truffle.api.vm.IncompleteSourceException(e);
             } catch (ParseException e) {
@@ -179,10 +186,5 @@ public final class TruffleRLanguage extends TruffleLanguage<RContext> {
 
     public RContext actuallyFindContext0(Node contextNode) {
         return findContext(contextNode);
-    }
-
-    @Override
-    protected Object evalInContext(Source source, Node node, MaterializedFrame frame) {
-        return RContext.getEngine().parseAndEval(source, frame, false);
     }
 }

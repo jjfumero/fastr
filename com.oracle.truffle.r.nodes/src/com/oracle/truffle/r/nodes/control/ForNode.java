@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -53,8 +53,11 @@ public final class ForNode extends AbstractLoopNode implements RSyntaxNode, RSyn
     @Child private LoopNode loopNode;
     @Child private SetVisibilityNode visibility = SetVisibilityNode.create();
 
-    private ForNode(SourceSection src, WriteVariableNode cvar, RNode range, RNode body) {
-        super(src);
+    private final RSyntaxLookup var;
+
+    public ForNode(SourceSection src, RSyntaxLookup operator, RSyntaxLookup var, RNode range, RNode body) {
+        super(src, operator);
+        this.var = var;
         String indexName = AnonymousFrameVariable.create("FOR_INDEX");
         String rangeName = AnonymousFrameVariable.create("FOR_RANGE");
         String lengthName = AnonymousFrameVariable.create("FOR_LENGTH");
@@ -62,11 +65,7 @@ public final class ForNode extends AbstractLoopNode implements RSyntaxNode, RSyn
         this.writeIndexNode = WriteVariableNode.createAnonymous(indexName, null, Mode.REGULAR);
         this.writeRangeNode = WriteVariableNode.createAnonymous(rangeName, range, Mode.REGULAR);
         this.writeLengthNode = WriteVariableNode.createAnonymous(lengthName, RLengthNodeGen.create(ReadVariableNode.create(rangeName)), Mode.REGULAR);
-        this.loopNode = Truffle.getRuntime().createLoopNode(new ForRepeatingNode(this, cvar, body, indexName, lengthName, rangeName));
-    }
-
-    public static ForNode create(SourceSection src, WriteVariableNode cvar, RSyntaxNode range, RSyntaxNode body) {
-        return new ForNode(src, cvar, range.asRNode(), body.asRNode());
+        this.loopNode = Truffle.getRuntime().createLoopNode(new ForRepeatingNode(this, var.getIdentifier(), body, indexName, lengthName, rangeName));
     }
 
     @Override
@@ -91,19 +90,18 @@ public final class ForNode extends AbstractLoopNode implements RSyntaxNode, RSyn
         @Child private ReadVariableNode readIndexNode;
         @Child private ReadVariableNode readLengthNode;
         @Child private WriteVariableNode writeIndexNode;
-        @Child private RNode loadElement;
 
+        // only used for toString
         private final ForNode forNode;
 
-        ForRepeatingNode(ForNode forNode, WriteVariableNode cvar, RNode body, String indexName, String lengthName, String rangeName) {
+        ForRepeatingNode(ForNode forNode, String var, RNode body, String indexName, String lengthName, String rangeName) {
             this.forNode = forNode;
-            this.writeElementNode = cvar;
+            this.writeElementNode = WriteVariableNode.createAnonymous(var, createIndexedLoad(indexName, rangeName), Mode.REGULAR, false);
             this.body = body;
 
             this.readIndexNode = ReadVariableNode.create(indexName);
             this.readLengthNode = ReadVariableNode.create(lengthName);
             this.writeIndexNode = WriteVariableNode.createAnonymous(indexName, null, Mode.REGULAR);
-            this.loadElement = createIndexedLoad(indexName, rangeName);
             // pre-initialize the profile so that loop exits to not deoptimize
             conditionProfile.profile(false);
         }
@@ -128,8 +126,8 @@ public final class ForNode extends AbstractLoopNode implements RSyntaxNode, RSyn
             }
             try {
                 if (conditionProfile.profile(index <= length)) {
-                    writeElementNode.execute(frame, loadElement.execute(frame));
-                    body.execute(frame);
+                    writeElementNode.voidExecute(frame);
+                    body.voidExecute(frame);
                     return true;
                 } else {
                     return false;
@@ -152,15 +150,9 @@ public final class ForNode extends AbstractLoopNode implements RSyntaxNode, RSyn
     }
 
     @Override
-    public RSyntaxElement getSyntaxLHS() {
-        return RSyntaxLookup.createDummyLookup(getSourceSection(), "for", true);
-    }
-
-    @Override
     public RSyntaxElement[] getSyntaxArguments() {
         ForRepeatingNode repeatingNode = (ForRepeatingNode) loopNode.getRepeatingNode();
-        return new RSyntaxElement[]{RSyntaxLookup.createDummyLookup(null, (String) repeatingNode.writeElementNode.getName(), false), writeRangeNode.getRhs().asRSyntaxNode(),
-                        repeatingNode.body.asRSyntaxNode()};
+        return new RSyntaxElement[]{var, writeRangeNode.getRhs().asRSyntaxNode(), repeatingNode.body.asRSyntaxNode()};
     }
 
     @Override

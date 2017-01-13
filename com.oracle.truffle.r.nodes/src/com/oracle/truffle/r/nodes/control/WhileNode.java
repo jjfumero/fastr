@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -46,13 +46,9 @@ public final class WhileNode extends AbstractLoopNode implements RSyntaxNode, RS
     @Child private LoopNode loop;
     @Child private SetVisibilityNode visibility = SetVisibilityNode.create();
 
-    private WhileNode(SourceSection src, RSyntaxNode condition, RSyntaxNode body) {
-        super(src);
+    public WhileNode(SourceSection src, RSyntaxLookup operator, RSyntaxNode condition, RSyntaxNode body) {
+        super(src, operator);
         this.loop = Truffle.getRuntime().createLoopNode(new WhileRepeatingNode(this, ConvertBooleanNode.create(condition), body.asRNode()));
-    }
-
-    public static WhileNode create(SourceSection src, RSyntaxNode condition, RSyntaxNode body) {
-        return new WhileNode(src, condition, body);
     }
 
     @Override
@@ -72,6 +68,7 @@ public final class WhileNode extends AbstractLoopNode implements RSyntaxNode, RS
         private final BranchProfile breakBlock = BranchProfile.create();
         private final BranchProfile nextBlock = BranchProfile.create();
 
+        // only used for toString
         private final WhileNode whileNode;
 
         WhileRepeatingNode(WhileNode whileNode, ConvertBooleanNode condition, RNode body) {
@@ -86,7 +83,7 @@ public final class WhileNode extends AbstractLoopNode implements RSyntaxNode, RS
         public boolean executeRepeating(VirtualFrame frame) {
             try {
                 if (conditionProfile.profile(condition.executeByte(frame) == RRuntime.LOGICAL_TRUE)) {
-                    body.execute(frame);
+                    body.voidExecute(frame);
                     normalBlock.enter();
                     return true;
                 } else {
@@ -105,11 +102,6 @@ public final class WhileNode extends AbstractLoopNode implements RSyntaxNode, RS
         public String toString() {
             return whileNode.toString();
         }
-    }
-
-    @Override
-    public RSyntaxElement getSyntaxLHS() {
-        return RSyntaxLookup.createDummyLookup(getSourceSection(), "while", true);
     }
 
     @Override

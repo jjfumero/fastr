@@ -32,7 +32,6 @@ import com.oracle.truffle.r.nodes.builtin.CastBuilder;
 import com.oracle.truffle.r.nodes.builtin.RBuiltinNode;
 import com.oracle.truffle.r.runtime.RRuntime;
 import com.oracle.truffle.r.runtime.builtins.RBuiltin;
-import com.oracle.truffle.r.runtime.data.RAttributeProfiles;
 import com.oracle.truffle.r.runtime.data.RComplex;
 import com.oracle.truffle.r.runtime.data.RComplexVector;
 import com.oracle.truffle.r.runtime.data.RDataFactory;
@@ -40,6 +39,8 @@ import com.oracle.truffle.r.runtime.data.RDoubleVector;
 import com.oracle.truffle.r.runtime.data.RMissing;
 import com.oracle.truffle.r.runtime.data.model.RAbstractComplexVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractDoubleVector;
+import com.oracle.truffle.r.runtime.data.model.RAbstractIntVector;
+import com.oracle.truffle.r.runtime.data.model.RAbstractLogicalVector;
 import com.oracle.truffle.r.runtime.ops.BinaryArithmetic;
 import com.oracle.truffle.r.runtime.ops.UnaryArithmetic;
 import com.oracle.truffle.r.runtime.ops.UnaryArithmeticFactory;
@@ -53,7 +54,6 @@ public abstract class Round extends RBuiltinNode {
     @Child private RoundArithmetic roundOp = new RoundArithmetic();
 
     private final NACheck check = NACheck.create();
-    private final RAttributeProfiles attrProfiles = RAttributeProfiles.create();
 
     @Override
     public Object[] getDefaultParameterValues() {
@@ -62,7 +62,8 @@ public abstract class Round extends RBuiltinNode {
 
     @Override
     protected void createCasts(CastBuilder casts) {
-        // TODO: this should also accept vectors:
+        // TODO: this should also accept vectors
+        // TODO: digits argument is rounded, not simply stripped off the decimal part
         casts.arg("digits").asIntegerVector().findFirst();
     }
 
@@ -76,6 +77,28 @@ public abstract class Round extends RBuiltinNode {
     protected double round(byte x, @SuppressWarnings("unused") int digits) {
         check.enable(x);
         return check.check(x) ? RRuntime.DOUBLE_NA : x;
+    }
+
+    @Specialization
+    protected RDoubleVector round(RAbstractLogicalVector x, @SuppressWarnings("unused") int digits) {
+        double[] data = new double[x.getLength()];
+        check.enable(x);
+        for (int i = 0; i < data.length; i++) {
+            byte val = x.getDataAt(i);
+            data[i] = check.check(val) ? RRuntime.DOUBLE_NA : val;
+        }
+        return RDataFactory.createDoubleVector(data, check.neverSeenNA());
+    }
+
+    @Specialization
+    protected RDoubleVector round(RAbstractIntVector x, @SuppressWarnings("unused") int digits) {
+        double[] data = new double[x.getLength()];
+        check.enable(x);
+        for (int i = 0; i < data.length; i++) {
+            int val = x.getDataAt(i);
+            data[i] = check.check(val) ? RRuntime.DOUBLE_NA : val;
+        }
+        return RDataFactory.createDoubleVector(data, check.neverSeenNA());
     }
 
     @Specialization(guards = "digits == 0")
@@ -99,7 +122,7 @@ public abstract class Round extends RBuiltinNode {
             result[i] = check.check(value) ? RRuntime.DOUBLE_NA : round(value, digits);
         }
         RDoubleVector ret = RDataFactory.createDoubleVector(result, check.neverSeenNA());
-        ret.copyAttributesFrom(attrProfiles, x);
+        ret.copyAttributesFrom(x);
         return ret;
     }
 
@@ -112,7 +135,7 @@ public abstract class Round extends RBuiltinNode {
             result[i] = check.check(value) ? RRuntime.DOUBLE_NA : roundDigits(value, digits);
         }
         RDoubleVector ret = RDataFactory.createDoubleVector(result, check.neverSeenNA());
-        ret.copyAttributesFrom(attrProfiles, x);
+        ret.copyAttributesFrom(x);
         return ret;
     }
 
@@ -140,7 +163,7 @@ public abstract class Round extends RBuiltinNode {
             check.check(r);
         }
         RComplexVector ret = RDataFactory.createComplexVector(result, check.neverSeenNA());
-        ret.copyAttributesFrom(attrProfiles, x);
+        ret.copyAttributesFrom(x);
         return ret;
     }
 
@@ -156,7 +179,7 @@ public abstract class Round extends RBuiltinNode {
             check.check(r);
         }
         RComplexVector ret = RDataFactory.createComplexVector(result, check.neverSeenNA());
-        ret.copyAttributesFrom(attrProfiles, x);
+        ret.copyAttributesFrom(x);
         return ret;
     }
 

@@ -21,14 +21,14 @@
 # questions.
 #
 suite = {
-  "mxversion" : "5.34.4",
+  "mxversion" : "5.60.0",
   "name" : "fastr",
   "versionConflictResolution" : "latest",
   "imports" : {
     "suites" : [
             {
                "name" : "truffle",
-               "version" : "3c34543a8b7ff5edd74b76aafbeb3af52bd4afe7",
+               "version" : "720bba917bc2907b9e6620365a1b3c66e2ad3cc6",
                "urls" : [
                     {"url" : "https://github.com/graalvm/truffle", "kind" : "git"},
                     {"url" : "https://curio.ssw.jku.at/nexus/content/repositories/snapshots", "kind" : "binary"},
@@ -60,9 +60,9 @@ suite = {
   # explicitly referenced in the Parser annotation processor.
   "libraries" : {
     "GNUR" : {
-        "path" : "libdownloads/R-3.2.4.tar.gz",
-        "urls" : ["http://cran.rstudio.com/src/base/R-3/R-3.2.4.tar.gz"],
-        "sha1" : "632664b3caa8d39f5fe6ac2ee9611b0f89ad6ed9",
+        "path" : "libdownloads/R-3.3.2.tar.gz",
+        "urls" : ["http://cran.rstudio.com/src/base/R-3/R-3.3.2.tar.gz"],
+        "sha1" : "0e39e9c2d28fe6bab9c55ca23e08ba8727fd2fca",
         "resource" : "true"
     },
 
@@ -88,6 +88,12 @@ suite = {
       "path" : "libdownloads/antlr-complete-3.5.1.jar",
       "urls" : ["http://central.maven.org/maven2/org/antlr/antlr-complete/3.5.1/antlr-complete-3.5.1.jar"],
       "sha1" : "ebb4b995fd67a9b291ea5b19379509160f56e154",
+    },
+
+    "XZ-1.5" : {
+      "path" : "libdownloads/xz-1.5.jar",
+      "urls" : ["http://central.maven.org/maven2/org/tukaani/xz/1.5/xz-1.5.jar"],
+      "sha1" : "9c64274b7dbb65288237216e3fae7877fd3f2bee",
     },
 
   },
@@ -210,6 +216,7 @@ suite = {
       "dependencies" : [
         "truffle:TRUFFLE_API",
         "truffle:TRUFFLE_DEBUG",
+        "XZ-1.5",
       ],
       "checkstyle" : "com.oracle.truffle.r.runtime",
       "javaCompliance" : "1.8",
@@ -261,10 +268,22 @@ suite = {
 
     "com.oracle.truffle.r.release" : {
       "sourceDirs" : ["src"],
-      "dependencies" : ["com.oracle.truffle.r.engine", "com.oracle.truffle.r.runtime.ffi", "com.oracle.truffle.r.native"],
+      "dependencies" : ["com.oracle.truffle.r.native.recommended"],
       "class" : "FastRReleaseProject",
       "output" : "com.oracle.truffle.r.release"
     },
+
+    "com.oracle.truffle.r.native.recommended" : {
+      "dependencies" : [
+        "com.oracle.truffle.r.native",
+        "com.oracle.truffle.r.engine",
+        "com.oracle.truffle.r.runtime.ffi"
+      ],
+      "class" : "FastRNativeRecommendedProject",
+      "native" : "true",
+      "workingSets" : "FastR",
+    },
+
   },
 
   "distributions" : {
@@ -292,6 +311,7 @@ suite = {
         "ANTLR-3.5",
         "GNUR",
         "GNU_ICONV",
+        "XZ-1.5",
       ],
       "distDependencies" : [
         "truffle:TRUFFLE_API",
@@ -331,6 +351,11 @@ suite = {
              "path" : "mxbuild/dists/darwin/amd64/fastr-unit-tests-native.jar",
            },
         },
+         "solaris" : {
+           "sparcv9" : {
+             "path" : "mxbuild/dists/solaris/sparcv9/fastr-unit-tests-native.jar",
+           }
+        },
       },
     },
 
@@ -352,6 +377,11 @@ suite = {
              "path" : "mxbuild/dists/darwin/amd64/fastr-native-dev.jar",
           },
         },
+         "solaris" : {
+           "sparcv9" : {
+             "path" : "mxbuild/dists/solaris/sparcv9/fastr-native-dev.jar",
+          },
+        },
       },
     },
 
@@ -367,6 +397,11 @@ suite = {
          "darwin" : {
            "amd64" : {
              "path" : "mxbuild/dists/darwin/amd64/fastr-release.jar",
+           }
+        },
+         "solaris" : {
+           "sparcv9" : {
+             "path" : "mxbuild/dists/solaris/sparcv9/fastr-release.jar",
            }
         },
       },

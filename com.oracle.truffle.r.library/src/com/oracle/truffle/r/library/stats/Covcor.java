@@ -5,34 +5,41 @@
  *
  * Copyright (c) 1995-2012, The R Core Team
  * Copyright (c) 2003, The R Foundation
- * Copyright (c) 2013, 2016, Oracle and/or its affiliates
+ * Copyright (c) 2013, 2017, Oracle and/or its affiliates
  *
  * All rights reserved.
  */
 package com.oracle.truffle.r.library.stats;
 
+import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.eq;
+import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.toBoolean;
+import static com.oracle.truffle.r.runtime.RError.NO_CALLER;
+import static com.oracle.truffle.r.runtime.RError.SHOW_CALLER;
+
 import java.util.Arrays;
 
+import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 import com.oracle.truffle.api.profiles.LoopConditionProfile;
+import com.oracle.truffle.r.nodes.attributes.SpecialAttributesFunctions.GetDimAttributeNode;
+import com.oracle.truffle.r.nodes.builtin.CastBuilder;
 import com.oracle.truffle.r.nodes.builtin.RExternalBuiltinNode;
 import com.oracle.truffle.r.runtime.RError;
+import com.oracle.truffle.r.runtime.RError.Message;
 import com.oracle.truffle.r.runtime.RRuntime;
-import com.oracle.truffle.r.runtime.data.RArgsValuesAndNames;
 import com.oracle.truffle.r.runtime.data.RDataFactory;
 import com.oracle.truffle.r.runtime.data.RDoubleVector;
 import com.oracle.truffle.r.runtime.data.RIntVector;
 import com.oracle.truffle.r.runtime.data.RNull;
 import com.oracle.truffle.r.runtime.data.model.RAbstractDoubleVector;
-import com.oracle.truffle.r.runtime.data.model.RAbstractIntVector;
 import com.oracle.truffle.r.runtime.nodes.RBaseNode;
 import com.oracle.truffle.r.runtime.ops.na.NACheck;
 
 /*
  * Logic derived from GNU-R, library/stats/src/cov.c
  */
-public final class Covcor extends RExternalBuiltinNode {
+public abstract class Covcor extends RExternalBuiltinNode.Arg4 {
 
     private final boolean isCor;
 
@@ -41,20 +48,21 @@ public final class Covcor extends RExternalBuiltinNode {
     }
 
     @Override
-    public Object call(RArgsValuesAndNames args) {
-        Object[] argValues = args.getArguments();
-        if (argValues[0] == RNull.instance) {
-            throw RError.error(this, RError.Message.IS_NULL, "x");
-        }
-        // TODO error checks/coercions
-        RAbstractDoubleVector x = (RAbstractDoubleVector) argValues[0];
-        RAbstractDoubleVector y = argValues[1] == RNull.instance ? null : (RAbstractDoubleVector) argValues[1];
-        int method = ((RAbstractIntVector) argValues[2]).getDataAt(0);
-        if (method != 4) {
-            throw RError.nyi(this, "method");
-        }
-        boolean iskendall = RRuntime.fromLogical(castLogical(castVector(argValues[3])));
-        return corcov(x.materialize(), y != null ? y.materialize() : null, method, iskendall, this);
+    protected void createCasts(CastBuilder casts) {
+        casts.arg(0).mustNotBeNull(SHOW_CALLER, Message.IS_NULL, "x").asDoubleVector();
+        casts.arg(1).allowNull().asDoubleVector();
+        casts.arg(2).asIntegerVector().findFirst().mustBe(eq(4), this, Message.NYI, "covcor: other method than 4 not implemented.");
+        casts.arg(3).asLogicalVector().findFirst().map(toBoolean());
+    }
+
+    @Specialization
+    public Object call(RAbstractDoubleVector x, @SuppressWarnings("unused") RNull y, int method, boolean iskendall) {
+        return corcov(x.materialize(), null, method, iskendall, this);
+    }
+
+    @Specialization
+    public Object call(RAbstractDoubleVector x, RAbstractDoubleVector y, int method, boolean iskendall) {
+        return corcov(x.materialize(), y.materialize(), method, iskendall, this);
     }
 
     private final NACheck check = NACheck.create();
@@ -69,19 +77,15 @@ public final class Covcor extends RExternalBuiltinNode {
     private final BranchProfile error = BranchProfile.create();
     private final BranchProfile warning = BranchProfile.create();
 
+    @Child private GetDimAttributeNode getDimsNode = GetDimAttributeNode.create();
+
     private final LoopConditionProfile loopLength = LoopConditionProfile.createCountingProfile();
 
     public RDoubleVector corcov(RDoubleVector x, RDoubleVector y, @SuppressWarnings("unused") int method, boolean iskendall, RBaseNode invokingNode) throws RError {
-        boolean ansmat;
-        boolean naFail;
-        boolean everything;
-        boolean sd0;
-        boolean emptyErr;
+
+        boolean ansmat = getDimsNode.isMatrix(x);
         int n;
         int ncx;
-        int ncy;
-
-        ansmat = x.isMatrix();
         if (ansmat) {
             n = nrows(x);
             ncx = ncols(x);
@@ -90,9 +94,10 @@ public final class Covcor extends RExternalBuiltinNode {
             ncx = 1;
         }
 
+        int ncy;
         if (y == null) {
             ncy = ncx;
-        } else if (y.isMatrix()) {
+        } else if (getDimsNode.isMatrix(y)) {
             if (nrows(y) != n) {
                 error.enter();
                 error("incompatible dimensions");
@@ -110,9 +115,9 @@ public final class Covcor extends RExternalBuiltinNode {
         // TODO adopt full use semantics
 
         /* "default: complete" (easier for -Wall) */
-        naFail = false;
-        everything = false;
-        emptyErr = true;
+        boolean naFail = false;
+        boolean everything = false;
+        boolean emptyErr = true;
 
         // case 4: /* "everything": NAs are propagated */
         everything = true;
@@ -126,6 +131,7 @@ public final class Covcor extends RExternalBuiltinNode {
         double[] answerData = new double[ncx * ncy];
 
         double[] xm = new double[ncx];
+        boolean sd0;
         if (y == null) {
             if (everything) {
                 sd0 = covNA1(n, ncx, x, xm, answerData, isCor, iskendall);
@@ -160,7 +166,7 @@ public final class Covcor extends RExternalBuiltinNode {
         }
 
         RDoubleVector ans = null;
-        if (x.isMatrix()) {
+        if (getDimsNode.isMatrix(x)) {
             ans = RDataFactory.createDoubleVector(answerData, !seenNA, new int[]{ncx, ncy});
         } else {
             ans = RDataFactory.createDoubleVector(answerData, !seenNA);
@@ -168,14 +174,14 @@ public final class Covcor extends RExternalBuiltinNode {
         return ans;
     }
 
-    private static int ncols(RDoubleVector x) {
+    private int ncols(RDoubleVector x) {
         assert x.isMatrix();
-        return x.getDimensions()[1];
+        return getDimsNode.getDimensions(x)[1];
     }
 
-    private static int nrows(RDoubleVector x) {
+    private int nrows(RDoubleVector x) {
         assert x.isMatrix();
-        return x.getDimensions()[0];
+        return getDimsNode.getDimensions(x)[0];
     }
 
     private void complete1(int n, int ncx, RDoubleVector x, RIntVector ind, boolean naFail) {
@@ -731,9 +737,8 @@ public final class Covcor extends RExternalBuiltinNode {
         }
     }
 
-    private static void error(String string) {
-        // TODO should be an R error
-        throw new UnsupportedOperationException("error: " + string);
+    private static void error(String message) {
+        RError.error(NO_CALLER, Message.GENERIC, message);
     }
 
     private boolean checkNAs(double... xs) {

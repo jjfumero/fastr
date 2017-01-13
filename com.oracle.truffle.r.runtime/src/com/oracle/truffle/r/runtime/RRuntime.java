@@ -5,7 +5,7 @@
  *
  * Copyright (c) 1995-2012, The R Core Team
  * Copyright (c) 2003, The R Foundation
- * Copyright (c) 2013, 2016, Oracle and/or its affiliates
+ * Copyright (c) 2013, 2017, Oracle and/or its affiliates
  *
  * All rights reserved.
  */
@@ -32,6 +32,7 @@ import com.oracle.truffle.r.runtime.data.RStringVector;
 import com.oracle.truffle.r.runtime.data.RSymbol;
 import com.oracle.truffle.r.runtime.data.RTypedValue;
 import com.oracle.truffle.r.runtime.data.model.RAbstractComplexVector;
+import com.oracle.truffle.r.runtime.data.model.RAbstractContainer;
 import com.oracle.truffle.r.runtime.data.model.RAbstractDoubleVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractIntVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractLogicalVector;
@@ -74,7 +75,7 @@ public class RRuntime {
     public static final String R_TEXT_MIME = "text/x-r";
 
     public static final String STRING_NA = new String("NA");
-    private static final String STRING_NaN = "NaN";
+    public static final String STRING_NaN = "NaN";
     private static final String STRING_TRUE = "TRUE";
     private static final String STRING_FALSE = "FALSE";
     public static final int INT_NA = Integer.MIN_VALUE;
@@ -87,7 +88,7 @@ public class RRuntime {
     public static final double EPSILON = Math.pow(2.0, -52.0);
 
     public static final double COMPLEX_NA_REAL_PART = DOUBLE_NA;
-    public static final double COMPLEX_NA_IMAGINARY_PART = 0.0;
+    public static final double COMPLEX_NA_IMAGINARY_PART = DOUBLE_NA;
 
     public static final byte LOGICAL_TRUE = 1;
     public static final byte LOGICAL_FALSE = 0;
@@ -128,6 +129,8 @@ public class RRuntime {
     public static final String CLASS_DATA_FRAME = "data.frame";
     public static final String CLASS_FACTOR = "factor";
     public static final String ORDERED_ATTR_KEY = "ordered";
+
+    public static final String CONN_ID_ATTR_KEY = "conn_id";
 
     public static final String RS3MethodsTable = ".__S3MethodsTable__.";
 
@@ -202,6 +205,9 @@ public class RRuntime {
         return RDataFactory.createComplex(COMPLEX_NA_REAL_PART, COMPLEX_NA_IMAGINARY_PART);
     }
 
+    /**
+     * Since a distinguished NaN value is used for NA, checking for {@code isNaN} suffices.
+     */
     public static boolean isNAorNaN(double d) {
         return Double.isNaN(d);
     }
@@ -344,7 +350,7 @@ public class RRuntime {
         // FIXME use R rules
         int result;
         try {
-            result = Integer.decode(s);  // decode supports hex constants
+            result = Integer.decode(Utils.trimLeadingZeros(s));  // decode supports hex constants
         } catch (NumberFormatException e) {
             if (exceptionOnFail) {
                 throw e;
@@ -506,13 +512,17 @@ public class RRuntime {
         return isNA(i) ? createComplexNA() : int2complexNoCheck(i);
     }
 
-    @TruffleBoundary
     public static String intToStringNoCheck(int operand) {
         if (operand >= MIN_CACHED_NUMBER && operand <= MAX_CACHED_NUMBER) {
             return numberStringCache[operand - MIN_CACHED_NUMBER];
         } else {
-            return String.valueOf(operand);
+            return intToStringInternal(operand);
         }
+    }
+
+    @TruffleBoundary
+    private static String intToStringInternal(int operand) {
+        return String.valueOf(operand);
     }
 
     public static boolean isCachedNumberString(int value) {
@@ -648,7 +658,7 @@ public class RRuntime {
     }
 
     public static boolean isNA(RComplex value) {
-        return isNA(value.getRealPart());
+        return isNA(value.getRealPart()) || isNA(value.getImaginaryPart());
     }
 
     @TruffleBoundary
@@ -691,11 +701,15 @@ public class RRuntime {
                     break;
                 default:
                     if (codepoint < 32 || codepoint == 0x7f) {
-                        str.append("\\").append(codepoint / 64).append((codepoint / 8) % 8).append(codepoint % 8);
+                        str.append("\\").append(codepoint >>> 6).append((codepoint >>> 3) & 0x7).append(codepoint & 0x7);
                     } else if (encodeNonASCII && codepoint > 0x7f && codepoint <= 0xff) {
                         str.append("\\x" + Integer.toHexString(codepoint));
-                        // } else if (codepoint > 0x7f && codepoint <= 0xff) {
-                        // str.append("\\u" + Integer.toHexString(codepoint));
+                    } else if (codepoint > 64967) { // determined by experimentation
+                        if (codepoint < 0x10000) {
+                            str.append("\\u").append(String.format("%04x", codepoint));
+                        } else {
+                            str.append("\\U").append(String.format("%08x", codepoint));
+                        }
                     } else {
                         str.appendCodePoint(codepoint);
                     }
@@ -790,6 +804,7 @@ public class RRuntime {
      * Returns {@code true} if the given object is R object and its class attribute contains given
      * class.
      */
+    @TruffleBoundary
     public static boolean hasRClass(Object obj, String rclassName) {
         return obj instanceof RAttributable && ((RAttributable) obj).hasClass(rclassName);
     }
@@ -849,4 +864,46 @@ public class RRuntime {
     public static double normalizeZero(double value) {
         return value == 0.0 ? 0.0 : value;
     }
+
+    public static int nrows(Object x) {
+        if (x instanceof RAbstractContainer) {
+            RAbstractContainer xa = (RAbstractContainer) x;
+            if (hasDims(xa)) {
+                return getDims(xa)[0];
+            } else {
+                return xa.getLength();
+            }
+        } else {
+            throw RError.error(RError.SHOW_CALLER2, RError.Message.OBJECT_NOT_MATRIX);
+        }
+    }
+
+    public static int ncols(Object x) {
+        if (x instanceof RAbstractContainer) {
+            RAbstractContainer xa = (RAbstractContainer) x;
+            if (hasDims(xa)) {
+                int[] dims = getDims(xa);
+                if (dims.length >= 2) {
+                    return dims[1];
+                } else {
+                    return 1;
+                }
+            } else {
+                return 1;
+            }
+        } else {
+            throw RError.error(RError.SHOW_CALLER2, RError.Message.OBJECT_NOT_MATRIX);
+        }
+    }
+
+    @TruffleBoundary
+    private static int[] getDims(RAbstractContainer xa) {
+        return xa.getDimensions();
+    }
+
+    @TruffleBoundary
+    private static boolean hasDims(RAbstractContainer xa) {
+        return xa.hasDimensions();
+    }
+
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -42,10 +42,10 @@ import com.oracle.truffle.r.nodes.builtin.base.fastpaths.MatrixFastPathNodeGen;
 import com.oracle.truffle.r.nodes.builtin.base.fastpaths.SetDiffFastPathNodeGen;
 import com.oracle.truffle.r.nodes.builtin.base.fastpaths.VectorFastPathsFactory.DoubleFastPathNodeGen;
 import com.oracle.truffle.r.nodes.builtin.base.fastpaths.VectorFastPathsFactory.IntegerFastPathNodeGen;
-import com.oracle.truffle.r.nodes.builtin.base.foreign.DotC;
-import com.oracle.truffle.r.nodes.builtin.base.foreign.DotCNodeGen;
-import com.oracle.truffle.r.nodes.builtin.base.foreign.ForeignFunctions;
-import com.oracle.truffle.r.nodes.builtin.base.foreign.ForeignFunctionsFactory;
+import com.oracle.truffle.r.nodes.builtin.base.foreign.CallAndExternalFunctions;
+import com.oracle.truffle.r.nodes.builtin.base.foreign.CallAndExternalFunctionsFactory;
+import com.oracle.truffle.r.nodes.builtin.base.foreign.FortranAndCFunctions;
+import com.oracle.truffle.r.nodes.builtin.base.foreign.FortranAndCFunctionsFactory;
 import com.oracle.truffle.r.nodes.builtin.base.infix.AccessField;
 import com.oracle.truffle.r.nodes.builtin.base.infix.AccessFieldNodeGen;
 import com.oracle.truffle.r.nodes.builtin.base.infix.AssignBuiltin;
@@ -67,7 +67,6 @@ import com.oracle.truffle.r.nodes.builtin.base.infix.IfBuiltinNodeGen;
 import com.oracle.truffle.r.nodes.builtin.base.infix.NextBuiltin;
 import com.oracle.truffle.r.nodes.builtin.base.infix.NextBuiltinNodeGen;
 import com.oracle.truffle.r.nodes.builtin.base.infix.ParenBuiltin;
-import com.oracle.truffle.r.nodes.builtin.base.infix.ParenBuiltinNodeGen;
 import com.oracle.truffle.r.nodes.builtin.base.infix.RepeatBuiltin;
 import com.oracle.truffle.r.nodes.builtin.base.infix.RepeatBuiltinNodeGen;
 import com.oracle.truffle.r.nodes.builtin.base.infix.Subscript;
@@ -98,6 +97,8 @@ import com.oracle.truffle.r.nodes.builtin.fastr.FastRInterop;
 import com.oracle.truffle.r.nodes.builtin.fastr.FastRInteropFactory;
 import com.oracle.truffle.r.nodes.builtin.fastr.FastRNanotime;
 import com.oracle.truffle.r.nodes.builtin.fastr.FastRNanotimeNodeGen;
+import com.oracle.truffle.r.nodes.builtin.fastr.FastRPkgSource;
+import com.oracle.truffle.r.nodes.builtin.fastr.FastRPkgSourceNodeGen;
 import com.oracle.truffle.r.nodes.builtin.fastr.FastRRefCountInfo;
 import com.oracle.truffle.r.nodes.builtin.fastr.FastRRefCountInfoNodeGen;
 import com.oracle.truffle.r.nodes.builtin.fastr.FastRStackTrace;
@@ -116,6 +117,8 @@ import com.oracle.truffle.r.nodes.builtin.fastr.FastRTree;
 import com.oracle.truffle.r.nodes.builtin.fastr.FastRTreeNodeGen;
 import com.oracle.truffle.r.nodes.builtin.fastr.FastRTreeStats;
 import com.oracle.truffle.r.nodes.builtin.fastr.FastRTreeStatsNodeGen;
+import com.oracle.truffle.r.nodes.builtin.fastr.FastRTry;
+import com.oracle.truffle.r.nodes.builtin.fastr.FastRTryNodeGen;
 import com.oracle.truffle.r.nodes.builtin.fastr.FastrDqrls;
 import com.oracle.truffle.r.nodes.builtin.fastr.FastrDqrlsNodeGen;
 import com.oracle.truffle.r.nodes.unary.UnaryNotNode;
@@ -168,6 +171,7 @@ public class BasePackage extends RBuiltinPackage {
         add(BinaryLogic.NonVectorOrBuiltin.class, () -> BinaryBooleanScalarNodeGen.create(BinaryLogic.NON_VECTOR_OR));
 
         // Now load the rest of the builtins in "base"
+        add(Abbrev.class, AbbrevNodeGen::create);
         add(APerm.class, APermNodeGen::create);
         add(NumericalFunctions.Abs.class, NumericalFunctionsFactory.AbsNodeGen::create);
         add(All.class, AllNodeGen::create);
@@ -179,6 +183,7 @@ public class BasePackage extends RBuiltinPackage {
         add(Array.class, ArrayNodeGen::create);
         add(AsCall.class, AsCallNodeGen::create);
         add(AsCharacter.class, AsCharacterNodeGen::create);
+        add(AsCharacterFactor.class, AsCharacterFactorNodeGen::create);
         add(AsComplex.class, AsComplexNodeGen::create);
         add(AsDouble.class, AsDoubleNodeGen::create);
         add(AsFunction.class, AsFunctionNodeGen::create);
@@ -197,7 +202,7 @@ public class BasePackage extends RBuiltinPackage {
         add(BaseGammaFunctions.Gamma.class, BaseGammaFunctionsFactory.GammaNodeGen::create);
         add(BaseGammaFunctions.Lgamma.class, BaseGammaFunctionsFactory.LgammaNodeGen::create);
         add(BaseGammaFunctions.TriGamma.class, BaseGammaFunctionsFactory.TriGammaNodeGen::create);
-        add(Choose.class, ChooseNodeGen::create);
+        add(ChooseBuiltin.class, ChooseBuiltinNodeGen::create);
         add(Bincode.class, BincodeNodeGen::create);
         add(Bind.CbindInternal.class, BindNodeGen.CbindInternalNodeGen::create);
         add(Bind.RbindInternal.class, BindNodeGen.RbindInternalNodeGen::create);
@@ -213,6 +218,11 @@ public class BasePackage extends RBuiltinPackage {
         add(BrowserFunctions.BrowserSetDebug.class, BrowserFunctionsFactory.BrowserSetDebugNodeGen::create);
         add(BrowserFunctions.BrowserText.class, BrowserFunctionsFactory.BrowserTextNodeGen::create);
         add(Call.class, CallNodeGen::create);
+        add(CallAndExternalFunctions.DotCall.class, CallAndExternalFunctionsFactory.DotCallNodeGen::create);
+        add(CallAndExternalFunctions.DotCallGraphics.class, CallAndExternalFunctionsFactory.DotCallGraphicsNodeGen::create);
+        add(CallAndExternalFunctions.DotExternal.class, CallAndExternalFunctionsFactory.DotExternalNodeGen::create);
+        add(CallAndExternalFunctions.DotExternal2.class, CallAndExternalFunctionsFactory.DotExternal2NodeGen::create);
+        add(CallAndExternalFunctions.DotExternalGraphics.class, CallAndExternalFunctionsFactory.DotExternalGraphicsNodeGen::create);
         add(Capabilities.class, CapabilitiesNodeGen::create);
         add(Cat.class, CatNodeGen::create);
         add(Ceiling.class, CeilingNodeGen::create);
@@ -224,7 +234,8 @@ public class BasePackage extends RBuiltinPackage {
         add(Combine.class, CombineNodeGen::create);
         add(CommandArgs.class, CommandArgsNodeGen::create);
         add(Complex.class, ComplexNodeGen::create);
-        add(CompilePKGS.class, CompilePKGSNodeGen::create);
+        add(CompileFunctions.CompilePKGS.class, CompileFunctionsFactory.CompilePKGSNodeGen::create);
+        add(CompileFunctions.EnableJIT.class, CompileFunctionsFactory.EnableJITNodeGen::create);
         add(NumericalFunctions.Conj.class, NumericalFunctionsFactory.ConjNodeGen::create);
         add(ConditionFunctions.AddCondHands.class, ConditionFunctionsFactory.AddCondHandsNodeGen::create);
         add(ConditionFunctions.AddRestart.class, ConditionFunctionsFactory.AddRestartNodeGen::create);
@@ -241,6 +252,8 @@ public class BasePackage extends RBuiltinPackage {
         add(ConnectionFunctions.File.class, ConnectionFunctionsFactory.FileNodeGen::create);
         add(ConnectionFunctions.Flush.class, ConnectionFunctionsFactory.FlushNodeGen::create);
         add(ConnectionFunctions.GZFile.class, ConnectionFunctionsFactory.GZFileNodeGen::create);
+        add(ConnectionFunctions.BZFile.class, ConnectionFunctionsFactory.BZFileNodeGen::create);
+        add(ConnectionFunctions.XZFile.class, ConnectionFunctionsFactory.XZFileNodeGen::create);
         add(ConnectionFunctions.GetAllConnections.class, ConnectionFunctionsFactory.GetAllConnectionsNodeGen::create);
         add(ConnectionFunctions.GetConnection.class, ConnectionFunctionsFactory.GetConnectionNodeGen::create);
         add(ConnectionFunctions.IsOpen.class, ConnectionFunctionsFactory.IsOpenNodeGen::create);
@@ -267,6 +280,7 @@ public class BasePackage extends RBuiltinPackage {
         add(Contributors.class, ContributorsNodeGen::create);
         add(CopyDFAttr.class, CopyDFAttrNodeGen::create);
         add(Crossprod.class, CrossprodNodeGen::create);
+        add(CRC64.class, CRC64NodeGen::create);
         add(CumMax.class, CumMaxNodeGen::create);
         add(CumMin.class, CumMinNodeGen::create);
         add(CumProd.class, CumProdNodeGen::create);
@@ -341,8 +355,10 @@ public class BasePackage extends RBuiltinPackage {
         add(FastrDqrls.class, FastrDqrlsNodeGen::create);
         add(FastRDebug.class, FastRDebugNodeGen::create);
         add(FastRIdentity.class, FastRIdentityNodeGen::create);
+        add(FastRTry.class, FastRTryNodeGen::create);
         add(FastRInspect.class, FastRInspectNodeGen::create);
         add(FastRInterop.Eval.class, FastRInteropFactory.EvalNodeGen::create);
+        add(FastRInterop.EvalFile.class, FastRInteropFactory.EvalFileNodeGen::create);
         add(FastRInterop.Export.class, FastRInteropFactory.ExportNodeGen::create);
         add(FastRInterop.HasSize.class, FastRInteropFactory.HasSizeNodeGen::create);
         add(FastRInterop.Import.class, FastRInteropFactory.ImportNodeGen::create);
@@ -351,6 +367,7 @@ public class BasePackage extends RBuiltinPackage {
         add(FastRInterop.ToBoolean.class, FastRInteropFactory.ToBooleanNodeGen::create);
         add(FastRNanotime.class, FastRNanotimeNodeGen::create);
         add(FastRRefCountInfo.class, FastRRefCountInfoNodeGen::create);
+        add(FastRPkgSource.class, FastRPkgSourceNodeGen::create);
         add(FastRStackTrace.class, FastRStackTraceNodeGen::create);
         add(FastRProfAttr.class, FastRStatsFactory.FastRProfAttrNodeGen::create);
         add(FastRProfTypecounts.class, FastRStatsFactory.FastRProfTypecountsNodeGen::create);
@@ -375,22 +392,18 @@ public class BasePackage extends RBuiltinPackage {
         add(FileFunctions.FilePath.class, FileFunctionsFactory.FilePathNodeGen::create);
         add(FileFunctions.FileRemove.class, FileFunctionsFactory.FileRemoveNodeGen::create);
         add(FileFunctions.FileRename.class, FileFunctionsFactory.FileRenameNodeGen::create);
+        add(FileFunctions.FileShow.class, FileFunctionsFactory.FileShowNodeGen::create);
         add(FileFunctions.FileSymLink.class, FileFunctionsFactory.FileSymLinkNodeGen::create);
         add(FileFunctions.ListFiles.class, FileFunctionsFactory.ListFilesNodeGen::create);
         add(FileFunctions.ListDirs.class, FileFunctionsFactory.ListDirsNodeGen::create);
         add(FileFunctions.Unlink.class, FileFunctionsFactory.UnlinkNodeGen::create);
         add(Floor.class, FloorNodeGen::create);
-        add(DotC.class, DotCNodeGen::create);
         add(ForceAndCall.class, ForceAndCallNodeGen::create);
-        add(ForeignFunctions.DotCall.class, ForeignFunctionsFactory.DotCallNodeGen::create);
-        add(ForeignFunctions.DotCallGraphics.class, ForeignFunctionsFactory.DotCallGraphicsNodeGen::create);
-        add(ForeignFunctions.DotExternal.class, ForeignFunctionsFactory.DotExternalNodeGen::create);
-        add(ForeignFunctions.DotExternal2.class, ForeignFunctionsFactory.DotExternal2NodeGen::create);
-        add(ForeignFunctions.DotExternalGraphics.class, ForeignFunctionsFactory.DotExternalGraphicsNodeGen::create);
-        add(ForeignFunctions.Fortran.class, ForeignFunctionsFactory.FortranNodeGen::create);
         add(Formals.class, FormalsNodeGen::create);
         add(Format.class, FormatNodeGen::create);
         add(FormatC.class, FormatCNodeGen::create);
+        add(FortranAndCFunctions.DotC.class, FortranAndCFunctionsFactory.DotCNodeGen::create);
+        add(FortranAndCFunctions.Fortran.class, FortranAndCFunctionsFactory.FortranNodeGen::create);
         add(FrameFunctions.MatchCall.class, FrameFunctionsFactory.MatchCallNodeGen::create);
         add(FrameFunctions.ParentFrame.class, FrameFunctionsFactory.ParentFrameNodeGen::create);
         add(FrameFunctions.SysCall.class, FrameFunctionsFactory.SysCallNodeGen::create);
@@ -433,6 +446,7 @@ public class BasePackage extends RBuiltinPackage {
         add(Interactive.class, InteractiveNodeGen::create);
         add(Internal.class, InternalNodeGen::create);
         add(IntToBits.class, IntToBitsNodeGen::create);
+        add(IntToUtf8.class, IntToUtf8NodeGen::create);
         add(Invisible.class, InvisibleNodeGen::create);
         add(IsATTY.class, IsATTYNodeGen::create);
         add(IsFiniteFunctions.IsFinite.class, IsFiniteFunctionsFactory.IsFiniteNodeGen::create);
@@ -469,6 +483,7 @@ public class BasePackage extends RBuiltinPackage {
         add(LaFunctions.Qr.class, LaFunctionsFactory.QrNodeGen::create);
         add(LaFunctions.QrCoefReal.class, LaFunctionsFactory.QrCoefRealNodeGen::create);
         add(LaFunctions.Rg.class, LaFunctionsFactory.RgNodeGen::create);
+        add(LaFunctions.Rs.class, LaFunctionsFactory.RsNodeGen::create);
         add(LaFunctions.Version.class, LaFunctionsFactory.VersionNodeGen::create);
         add(LaFunctions.LaSolve.class, LaFunctionsFactory.LaSolveNodeGen::create);
         add(Lapply.class, LapplyNodeGen::create);
@@ -498,6 +513,7 @@ public class BasePackage extends RBuiltinPackage {
         add(MatMult.class, MatMult::create);
         add(Match.class, MatchNodeGen::create);
         add(MatchFun.class, MatchFunNodeGen::create);
+        add(MatchArg.class, MatchArgNodeGen::create);
         add(Matrix.class, MatrixNodeGen::create);
         add(Max.class, MaxNodeGen::create);
         add(Mean.class, MeanNodeGen::create);
@@ -527,6 +543,7 @@ public class BasePackage extends RBuiltinPackage {
         add(Paste.class, PasteNodeGen::create);
         add(Paste0.class, Paste0NodeGen::create);
         add(PathExpand.class, PathExpandNodeGen::create);
+        add(Pretty.class, PrettyNodeGen::create);
         add(Primitive.class, PrimitiveNodeGen::create);
         add(PrintFunctions.PrintDefault.class, PrintFunctionsFactory.PrintDefaultNodeGen::create);
         add(PrintFunctions.PrintFunction.class, PrintFunctionsFactory.PrintFunctionNodeGen::create);
@@ -542,6 +559,7 @@ public class BasePackage extends RBuiltinPackage {
         add(RawFunctions.CharToRaw.class, RawFunctionsFactory.CharToRawNodeGen::create);
         add(RawFunctions.RawToChar.class, RawFunctionsFactory.RawToCharNodeGen::create);
         add(RawFunctions.RawShift.class, RawFunctionsFactory.RawShiftNodeGen::create);
+        add(RawToBits.class, RawToBitsNodeGen::create);
         add(NumericalFunctions.Re.class, NumericalFunctionsFactory.ReNodeGen::create);
         add(ReadDCF.class, ReadDCFNodeGen::create);
         add(ReadREnviron.class, ReadREnvironNodeGen::create);
@@ -564,9 +582,9 @@ public class BasePackage extends RBuiltinPackage {
         add(Sample.class, SampleNodeGen::create);
         add(Sample2.class, Sample2NodeGen::create);
         add(Scan.class, ScanNodeGen::create);
-        add(Seq.class, SeqNodeGen::create);
-        add(SeqAlong.class, SeqAlongNodeGen::create);
-        add(SeqLen.class, SeqLenNodeGen::create);
+        add(SeqFunctions.SeqInt.class, SeqFunctionsFactory.SeqIntNodeGen::create);
+        add(SeqFunctions.SeqAlong.class, SeqFunctionsFactory.SeqAlongNodeGen::create);
+        add(SeqFunctions.SeqLen.class, SeqFunctionsFactory.SeqLenNodeGen::create);
         add(SerializeFunctions.Serialize.class, SerializeFunctionsFactory.SerializeNodeGen::create);
         add(SerializeFunctions.SerializeB.class, SerializeFunctionsFactory.SerializeBNodeGen::create);
         add(SerializeFunctions.SerializeToConn.class, SerializeFunctionsFactory.SerializeToConnNodeGen::create);
@@ -587,8 +605,11 @@ public class BasePackage extends RBuiltinPackage {
         add(Sprintf.class, SprintfNodeGen::create);
         add(NumericalFunctions.Sqrt.class, NumericalFunctionsFactory.SqrtNodeGen::create);
         add(StandardGeneric.class, StandardGenericNodeGen::create);
+        add(StartsEndsWithFunctions.StartsWith.class, StartsEndsWithFunctionsFactory.StartsWithNodeGen::create);
+        add(StartsEndsWithFunctions.EndsWith.class, StartsEndsWithFunctionsFactory.EndsWithNodeGen::create);
         add(Stop.class, StopNodeGen::create);
         add(Strtoi.class, StrtoiNodeGen::create);
+        add(Strrep.class, StrrepNodeGen::create);
         add(Strtrim.class, StrtrimNodeGen::create);
         add(Substitute.class, SubstituteNodeGen::create);
         add(Substr.class, SubstrNodeGen::create);
@@ -648,6 +669,7 @@ public class BasePackage extends RBuiltinPackage {
         add(UpdateClass.class, UpdateClassNodeGen::create);
         add(UpdateDim.class, UpdateDimNodeGen::create);
         add(UpdateDimNames.class, UpdateDimNamesNodeGen::create);
+        add(Utf8ToInt.class, Utf8ToIntNodeGen::create);
         add(EnvFunctions.UpdateEnvironment.class, EnvFunctionsFactory.UpdateEnvironmentNodeGen::create);
         add(UpdateLength.class, UpdateLengthNodeGen::create);
         add(UpdateLevels.class, UpdateLevelsNodeGen::create);
@@ -679,7 +701,7 @@ public class BasePackage extends RBuiltinPackage {
         add(FunctionBuiltin.class, FunctionBuiltinNodeGen::create);
         add(IfBuiltin.class, IfBuiltinNodeGen::create);
         add(NextBuiltin.class, NextBuiltinNodeGen::create);
-        add(ParenBuiltin.class, ParenBuiltinNodeGen::create);
+        add(ParenBuiltin.class, ParenBuiltin::new, ParenBuiltin::special);
         add(RepeatBuiltin.class, RepeatBuiltinNodeGen::create);
         add(Tilde.class, TildeNodeGen::create);
         add(UpdateSubscript.class, UpdateSubscriptNodeGen::create, UpdateSubscript::special);
@@ -727,8 +749,10 @@ public class BasePackage extends RBuiltinPackage {
         addFastPath(baseFrame, "pmin", FastPathFactory.EVALUATE_ARGS);
         addFastPath(baseFrame, "cbind", FastPathFactory.FORCED_EAGER_ARGS);
         addFastPath(baseFrame, "rbind", FastPathFactory.FORCED_EAGER_ARGS);
+        addFastPath(baseFrame, "seq.default", SeqFunctionsFactory.SeqDefaultFastPathNodeGen::create, RVisibility.ON);
+        addFastPath(baseFrame, "seq", SeqFunctionsFactory.SeqFastPathNodeGen::create, RVisibility.ON);
 
-        setContainsDispatch(baseFrame, "sys.function", "match.arg", "eval", "[.data.frame", "[[.data.frame", "[<-.data.frame", "[[<-.data.frame");
+        setContainsDispatch(baseFrame, "eval", "[.data.frame", "[[.data.frame", "[<-.data.frame", "[[<-.data.frame");
     }
 
     private static void setContainsDispatch(MaterializedFrame baseFrame, String... functions) {

@@ -23,27 +23,44 @@
 package com.oracle.truffle.r.runtime.data;
 
 import com.oracle.truffle.r.runtime.RType;
+import com.oracle.truffle.r.runtime.ffi.DLL.SymbolHandle;
 
 /**
- * The rarely seen {@code externalptr} type.
+ * The rarely seen {@code externalptr} type used in native code.
  */
-public class RExternalPtr extends RAttributeStorage {
-    private long addr;
+public class RExternalPtr extends RAttributeStorage implements RTypedValue {
+    /**
+     * In GNU R, typically the address of some C structure, so a {@code void*}. Represented here as
+     * our abstraction of a "native symbol" (even though there may not actually be a symbol
+     * associated with the address).
+     */
+    private SymbolHandle handle;
     private Object tag;
     private Object prot;
+    /**
+     * Has no GNU R counterpart. Used internally to store a Java object that, for example,
+     * corresponds to the C state in {@link #handle}. Evidently, the R FFI never accesses this
+     * field.
+     */
+    private Object externalObject;
 
-    RExternalPtr(long addr, Object tag, Object prot) {
-        this.addr = addr;
+    RExternalPtr(SymbolHandle handle, Object externalObject, Object tag, Object prot) {
+        this.handle = handle;
+        this.externalObject = externalObject;
         this.tag = tag;
         this.prot = prot;
     }
 
     public RExternalPtr copy() {
-        return RDataFactory.createExternalPtr(addr, tag, prot);
+        return RDataFactory.createExternalPtr(handle, externalObject, tag, prot);
     }
 
-    public long getAddr() {
-        return addr;
+    public SymbolHandle getAddr() {
+        return handle;
+    }
+
+    public Object getExternalObject() {
+        return externalObject;
     }
 
     public Object getTag() {
@@ -54,8 +71,12 @@ public class RExternalPtr extends RAttributeStorage {
         return prot;
     }
 
-    public void setAddr(long value) {
-        this.addr = value;
+    public void setAddr(SymbolHandle value) {
+        this.handle = value;
+    }
+
+    public void setExternalObject(Object externalObject) {
+        this.externalObject = externalObject;
     }
 
     public void setTag(Object tag) {

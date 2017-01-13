@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -40,8 +40,8 @@ import com.oracle.truffle.r.runtime.RType;
 import com.oracle.truffle.r.runtime.Utils;
 import com.oracle.truffle.r.runtime.VirtualEvalFrame;
 import com.oracle.truffle.r.runtime.context.RContext;
-import com.oracle.truffle.r.runtime.data.RAttributeProfiles;
 import com.oracle.truffle.r.runtime.data.RAttributeStorage;
+import com.oracle.truffle.r.runtime.data.RAttributesLayout;
 import com.oracle.truffle.r.runtime.data.RDataFactory;
 import com.oracle.truffle.r.runtime.data.RFunction;
 import com.oracle.truffle.r.runtime.data.RList;
@@ -428,7 +428,7 @@ public abstract class REnvironment extends RAttributeStorage {
         REnvironment newEnv = RDataFactory.createNewEnv(getName());
         RArguments.initializeEnclosingFrame(newEnv.getFrame(), parentClone.getFrame());
         if (attributes != null) {
-            newEnv.attributes = attributes.copy();
+            newEnv.initAttributes(RAttributesLayout.copy(attributes));
         }
         copyBindings(newEnv);
         return newEnv;
@@ -662,10 +662,10 @@ public abstract class REnvironment extends RAttributeStorage {
      * e.g. {@code substitute}.
      */
     @TruffleBoundary
-    public static REnvironment createFromList(RAttributeProfiles attrProfiles, RList list, REnvironment parent) {
+    public static REnvironment createFromList(RList list, REnvironment parent) {
         REnvironment result = RDataFactory.createNewEnv(null);
         RArguments.initializeEnclosingFrame(result.getFrame(), parent.getFrame());
-        RStringVector names = list.getNames(attrProfiles);
+        RStringVector names = list.getNames();
         for (int i = 0; i < list.getLength(); i++) {
             try {
                 result.put(names.getDataAt(i), list.getDataAt(i));

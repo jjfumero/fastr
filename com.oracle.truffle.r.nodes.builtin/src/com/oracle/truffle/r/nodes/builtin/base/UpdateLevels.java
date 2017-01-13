@@ -4,7 +4,7 @@
  * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * Copyright (c) 2014, Purdue University
- * Copyright (c) 2014, 2016, Oracle and/or its affiliates
+ * Copyright (c) 2014, 2017, Oracle and/or its affiliates
  *
  * All rights reserved.
  */
@@ -15,14 +15,16 @@ import static com.oracle.truffle.r.runtime.RDispatch.INTERNAL_GENERIC;
 import static com.oracle.truffle.r.runtime.builtins.RBehavior.PURE;
 import static com.oracle.truffle.r.runtime.builtins.RBuiltinKind.PRIMITIVE;
 
-import com.oracle.truffle.api.CompilerDirectives;
+import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
+import com.oracle.truffle.r.nodes.attributes.RemoveFixedAttributeNode;
+import com.oracle.truffle.r.nodes.attributes.SetFixedAttributeNode;
+import com.oracle.truffle.r.nodes.builtin.CastBuilder;
 import com.oracle.truffle.r.nodes.builtin.RBuiltinNode;
-import com.oracle.truffle.r.nodes.unary.CastToVectorNode;
-import com.oracle.truffle.r.nodes.unary.CastToVectorNodeGen;
+import com.oracle.truffle.r.runtime.RError;
+import com.oracle.truffle.r.runtime.RError.Message;
 import com.oracle.truffle.r.runtime.RRuntime;
 import com.oracle.truffle.r.runtime.builtins.RBuiltin;
-import com.oracle.truffle.r.runtime.data.RAttributeProfiles;
 import com.oracle.truffle.r.runtime.data.RNull;
 import com.oracle.truffle.r.runtime.data.RVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractVector;
@@ -30,33 +32,42 @@ import com.oracle.truffle.r.runtime.data.model.RAbstractVector;
 @RBuiltin(name = "levels<-", kind = PRIMITIVE, parameterNames = {"x", "value"}, dispatch = INTERNAL_GENERIC, behavior = PURE)
 public abstract class UpdateLevels extends RBuiltinNode {
 
-    @Child private CastToVectorNode castVector;
+    @Override
+    protected void createCasts(CastBuilder casts) {
+        casts.arg("value").allowNull().asVector(false);
+    }
 
-    private final RAttributeProfiles attrProfiles = RAttributeProfiles.create();
-
-    private RAbstractVector castVector(Object value) {
-        if (castVector == null) {
-            CompilerDirectives.transferToInterpreterAndInvalidate();
-            castVector = insert(CastToVectorNodeGen.create(false));
-        }
-        return (RAbstractVector) castVector.execute(value);
+    protected RemoveFixedAttributeNode createRemoveAttrNode() {
+        return RemoveFixedAttributeNode.create(RRuntime.LEVELS_ATTR_KEY);
     }
 
     @Specialization
-    protected RAbstractVector updateLevels(RAbstractVector vector, @SuppressWarnings("unused") RNull levels) {
+    protected RAbstractVector updateLevels(RAbstractVector vector, @SuppressWarnings("unused") RNull levels,
+                    @Cached("createRemoveAttrNode()") RemoveFixedAttributeNode removeAttrNode) {
         RVector<?> v = (RVector<?>) vector.getNonShared();
-        v.removeAttr(attrProfiles, RRuntime.LEVELS_ATTR_KEY);
+        removeAttrNode.execute(v);
         return v;
     }
 
-    @Specialization(guards = "levelsNotNull(levels)")
-    protected RAbstractVector updateLevels(RAbstractVector vector, Object levels) {
+    protected SetFixedAttributeNode createSetLevelsAttrNode() {
+        return SetFixedAttributeNode.create(RRuntime.LEVELS_ATTR_KEY);
+    }
+
+    @Specialization(guards = "!isRNull(levels)")
+    protected RAbstractVector updateLevels(RAbstractVector vector, Object levels,
+                    @Cached("createSetLevelsAttrNode()") SetFixedAttributeNode setLevelsAttrNode) {
         RVector<?> v = (RVector<?>) vector.getNonShared();
-        v.setAttr(RRuntime.LEVELS_ATTR_KEY, castVector(levels));
+        setLevelsAttrNode.execute(v, levels);
         return v;
     }
 
-    protected boolean levelsNotNull(Object levels) {
-        return levels != RNull.instance;
+    @Specialization
+    protected RNull updateLevels(@SuppressWarnings("unused") RNull vector, @SuppressWarnings("unused") RNull levels) {
+        return RNull.instance;
+    }
+
+    @Specialization(guards = "!isRNull(levels)")
+    protected RAbstractVector updateLevels(@SuppressWarnings("unused") RNull vector, @SuppressWarnings("unused") Object levels) {
+        throw RError.error(this, Message.SET_ATTRIBUTES_ON_NULL);
     }
 }

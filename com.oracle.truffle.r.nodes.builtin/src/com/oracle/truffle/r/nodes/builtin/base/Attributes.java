@@ -31,15 +31,17 @@ import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Fallback;
 import com.oracle.truffle.api.dsl.Specialization;
+import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.api.profiles.ConditionProfile;
+import com.oracle.truffle.r.nodes.attributes.ArrayAttributeNode;
+import com.oracle.truffle.r.nodes.attributes.SpecialAttributesFunctions.SetNamesAttributeNode;
 import com.oracle.truffle.r.nodes.builtin.RBuiltinNode;
 import com.oracle.truffle.r.runtime.RError;
 import com.oracle.truffle.r.runtime.RRuntime;
 import com.oracle.truffle.r.runtime.builtins.RBuiltin;
 import com.oracle.truffle.r.runtime.data.RAttributable;
-import com.oracle.truffle.r.runtime.data.RAttributes;
-import com.oracle.truffle.r.runtime.data.RAttributes.RAttribute;
+import com.oracle.truffle.r.runtime.data.RAttributesLayout;
 import com.oracle.truffle.r.runtime.data.RDataFactory;
 import com.oracle.truffle.r.runtime.data.RLanguage;
 import com.oracle.truffle.r.runtime.data.RList;
@@ -51,6 +53,8 @@ import com.oracle.truffle.r.runtime.env.REnvironment;
 public abstract class Attributes extends RBuiltinNode {
 
     private final BranchProfile rownamesBranch = BranchProfile.create();
+    @Child private ArrayAttributeNode arrayAttrAccess = ArrayAttributeNode.create();
+    @Child private SetNamesAttributeNode setNamesNode = SetNamesAttributeNode.create();
 
     @Specialization
     protected Object attributesNull(RAbstractContainer container, //
@@ -87,12 +91,12 @@ public abstract class Attributes extends RBuiltinNode {
      * {@code language} objects behave differently regarding "names"; they don't get included.
      */
     private Object createResult(RAttributable attributable, boolean ignoreNames) {
-        RAttributes attributes = attributable.getAttributes();
+        DynamicObject attributes = attributable.getAttributes();
         int size = attributes.size();
         String[] names = new String[size];
         Object[] values = new Object[size];
         int z = 0;
-        for (RAttribute attr : attributes) {
+        for (RAttributesLayout.RAttribute attr : arrayAttrAccess.execute(attributes)) {
             String name = attr.getName();
             if (ignoreNames && name.equals(RRuntime.NAMES_ATTR_KEY)) {
                 continue;
@@ -115,11 +119,11 @@ public abstract class Attributes extends RBuiltinNode {
             }
         }
         RList result = RDataFactory.createList(values);
-        result.setNames(RDataFactory.createStringVector(names, true));
+        setNamesNode.setNames(result, RDataFactory.createStringVector(names, true));
         return result;
     }
 
     private static boolean hasAttributes(RAttributable attributable) {
-        return attributable.getAttributes() != null && attributable.getAttributes().size() > 0;
+        return attributable.getAttributes() != null && !attributable.getAttributes().isEmpty();
     }
 }

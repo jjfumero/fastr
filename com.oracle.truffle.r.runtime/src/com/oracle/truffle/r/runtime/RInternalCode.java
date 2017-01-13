@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,7 +23,6 @@
 
 package com.oracle.truffle.r.runtime;
 
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -43,7 +42,7 @@ import com.oracle.truffle.r.runtime.env.REnvironment;
 public final class RInternalCode {
     private final RContext context;
     private final String basePackage;
-    private Source source;
+    private final Source source;
 
     private REnvironment evaluatedEnvironment;
 
@@ -60,7 +59,7 @@ public final class RInternalCode {
 
     private REnvironment evaluate() {
         try {
-            RExpression parsedCode = context.getThisEngine().parse(Collections.emptyMap(), source);
+            RExpression parsedCode = context.getThisEngine().parse(source);
             REnvironment statsPackage = REnvironment.getRegisteredNamespace(context, basePackage);
             evaluatedEnvironment = RDataFactory.createNewEnv(null, true, 10);
             evaluatedEnvironment.setParent(statsPackage);

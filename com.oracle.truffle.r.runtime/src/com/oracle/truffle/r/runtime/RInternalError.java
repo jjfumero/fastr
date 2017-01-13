@@ -60,6 +60,15 @@ public final class RInternalError extends Error {
         verboseStackTrace = createVerboseStackTrace();
     }
 
+    /**
+     * Constructor that does not use {@code String.format} so that the message may contain
+     * formatting instructions.
+     */
+    public RInternalError(Throwable cause, String message) {
+        super(message, cause);
+        verboseStackTrace = createVerboseStackTrace();
+    }
+
     public String getVerboseStackTrace() {
         return verboseStackTrace;
     }
@@ -76,6 +85,14 @@ public final class RInternalError extends Error {
             CompilerDirectives.transferToInterpreter();
             throw shouldNotReachHere("failed guarantee");
         }
+    }
+
+    public static <T> T guaranteeNonNull(T value) {
+        if (value == null) {
+            CompilerDirectives.transferToInterpreter();
+            throw shouldNotReachHere("should not be null");
+        }
+        return value;
     }
 
     public static RuntimeException unimplemented() {

@@ -72,12 +72,19 @@ public class JNI_Base implements BaseRFFI {
 
     @Override
     public String mkdtemp(String template) {
+        /*
+         * Not only must the (C) string end in XXXXXX it must also be null-terminated. Since it is
+         * modified by mkdtemp we must make a copy.
+         */
         byte[] bytes = template.getBytes();
-        long result = native_mkdtemp(bytes);
+        byte[] ztbytes = new byte[bytes.length + 1];
+        System.arraycopy(bytes, 0, ztbytes, 0, bytes.length);
+        ztbytes[bytes.length] = 0;
+        long result = native_mkdtemp(ztbytes);
         if (result == 0) {
             return null;
         } else {
-            return new String(bytes);
+            return new String(ztbytes, 0, bytes.length);
         }
     }
 
@@ -103,33 +110,6 @@ public class JNI_Base implements BaseRFFI {
         } else {
             return result;
         }
-    }
-
-    @Override
-    public Object dlopen(String path, boolean local, boolean now) {
-        long handle = native_dlopen(path, local, now);
-        if (handle == 0) {
-            return null;
-        } else {
-            return new Long(handle);
-        }
-    }
-
-    @Override
-    public long dlsym(Object handle, String symbol) {
-        long nativeHandle = (Long) handle;
-        return native_dlsym(nativeHandle, symbol);
-    }
-
-    @Override
-    public int dlclose(Object handle) {
-        long nativeHandle = (Long) handle;
-        return native_dlclose(nativeHandle);
-    }
-
-    @Override
-    public String dlerror() {
-        return native_dlerror();
     }
 
     @Override
@@ -159,13 +139,4 @@ public class JNI_Base implements BaseRFFI {
     private static native long native_strtol(String s, int base, int[] errno);
 
     private static native String native_readlink(String s, int[] errno);
-
-    private static native long native_dlopen(String path, boolean local, boolean now);
-
-    private static native int native_dlclose(long handle);
-
-    private static native String native_dlerror();
-
-    private static native long native_dlsym(long handle, String symbol);
-
 }

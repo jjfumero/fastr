@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -36,6 +36,8 @@ import com.oracle.truffle.api.interop.UnknownIdentifierException;
 import com.oracle.truffle.api.interop.UnsupportedMessageException;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
+import com.oracle.truffle.api.object.DynamicObject;
+import com.oracle.truffle.r.nodes.attributes.SetFixedAttributeNode;
 import com.oracle.truffle.r.nodes.binary.BoxPrimitiveNode;
 import com.oracle.truffle.r.nodes.builtin.base.InheritsBuiltin;
 import com.oracle.truffle.r.nodes.builtin.base.InheritsBuiltinNodeGen;
@@ -54,9 +56,8 @@ import com.oracle.truffle.r.runtime.RError;
 import com.oracle.truffle.r.runtime.RInternalError;
 import com.oracle.truffle.r.runtime.RRuntime;
 import com.oracle.truffle.r.runtime.RType;
-import com.oracle.truffle.r.runtime.data.RAttributeProfiles;
 import com.oracle.truffle.r.runtime.data.RAttributeStorage;
-import com.oracle.truffle.r.runtime.data.RAttributes;
+import com.oracle.truffle.r.runtime.data.RAttributesLayout;
 import com.oracle.truffle.r.runtime.data.RDataFactory;
 import com.oracle.truffle.r.runtime.data.RDoubleVector;
 import com.oracle.truffle.r.runtime.data.RIntVector;
@@ -100,6 +101,8 @@ public final class ValuePrinterNode extends RBaseNode {
         @Child private Node isBoxedNode = com.oracle.truffle.api.interop.Message.IS_BOXED.createNode();
         @Child private Node unboxNode = com.oracle.truffle.api.interop.Message.UNBOX.createNode();
         @Child private Node keysNode = com.oracle.truffle.api.interop.Message.KEYS.createNode();
+        @Child private SetFixedAttributeNode namesAttrSetter = SetFixedAttributeNode.createNames();
+        @Child private SetFixedAttributeNode isTruffleObjAttrSetter = SetFixedAttributeNode.create("is.truffle.object");
 
         public Object convert(VirtualFrame frame, TruffleObject obj) {
             class RStringWrapper extends TruffleObjectWrapper implements RAbstractStringVector {
@@ -322,7 +325,9 @@ public final class ValuePrinterNode extends RBaseNode {
 
                         RListWrapper(int length) {
                             super(length);
-                            initAttributes(RAttributes.createInitialized(new String[]{RRuntime.NAMES_ATTR_KEY, "is.truffle.object"}, new Object[]{names, RRuntime.LOGICAL_TRUE}));
+                            DynamicObject attrs = RAttributesLayout.createNames(names);
+                            initAttributes(attrs);
+                            isTruffleObjAttrSetter.execute(attrs, RRuntime.LOGICAL_TRUE);
                         }
 
                         @Override
@@ -350,7 +355,7 @@ public final class ValuePrinterNode extends RBaseNode {
                         }
 
                         @Override
-                        public RStringVector getNames(RAttributeProfiles attrProfiles) {
+                        public RStringVector getNames() {
                             return names;
                         }
 
@@ -425,7 +430,8 @@ public final class ValuePrinterNode extends RBaseNode {
         private final int length;
 
         TruffleObjectWrapper(int length) {
-            initAttributes(RAttributes.createInitialized(new String[]{"is.truffle.object"}, new Object[]{RRuntime.LOGICAL_TRUE}));
+            initAttributes().define("is.truffle.object", RRuntime.LOGICAL_TRUE);
+
             this.length = length;
         }
 
@@ -530,17 +536,17 @@ public final class ValuePrinterNode extends RBaseNode {
         }
 
         @Override
-        public RStringVector getNames(RAttributeProfiles attrProfiles) {
+        public RStringVector getNames() {
             return null;
         }
 
         @Override
-        public void setNames(RStringVector newNames) {
+        public final void setNames(RStringVector newNames) {
             throw RInternalError.shouldNotReachHere();
         }
 
         @Override
-        public RList getDimNames(RAttributeProfiles attrProfiles) {
+        public RList getDimNames() {
             return null;
         }
 
@@ -550,7 +556,7 @@ public final class ValuePrinterNode extends RBaseNode {
         }
 
         @Override
-        public Object getRowNames(RAttributeProfiles attrProfiles) {
+        public Object getRowNames() {
             return null;
         }
 

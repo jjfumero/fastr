@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,7 +22,7 @@
  */
 package com.oracle.truffle.r.nodes.builtin.base;
 
-import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.*;
+import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.instanceOf;
 import static com.oracle.truffle.r.runtime.builtins.RBehavior.PURE;
 import static com.oracle.truffle.r.runtime.builtins.RBuiltinKind.INTERNAL;
 
@@ -41,13 +41,11 @@ import com.oracle.truffle.r.nodes.function.FormalArguments;
 import com.oracle.truffle.r.nodes.function.FunctionDefinitionNode;
 import com.oracle.truffle.r.nodes.function.SaveArgumentsNode;
 import com.oracle.truffle.r.runtime.ArgumentsSignature;
-import com.oracle.truffle.r.runtime.RDeparse;
 import com.oracle.truffle.r.runtime.RError;
 import com.oracle.truffle.r.runtime.RInternalError;
 import com.oracle.truffle.r.runtime.RRuntime;
 import com.oracle.truffle.r.runtime.RType;
 import com.oracle.truffle.r.runtime.builtins.RBuiltin;
-import com.oracle.truffle.r.runtime.data.RAttributeProfiles;
 import com.oracle.truffle.r.runtime.data.RDataFactory;
 import com.oracle.truffle.r.runtime.data.RExpression;
 import com.oracle.truffle.r.runtime.data.RFunction;
@@ -66,8 +64,6 @@ import com.oracle.truffle.r.runtime.nodes.RSyntaxNode;
 
 @RBuiltin(name = "as.function.default", kind = INTERNAL, parameterNames = {"x", "envir"}, behavior = PURE)
 public abstract class AsFunction extends RBuiltinNode {
-
-    private final RAttributeProfiles attrProfiles = RAttributeProfiles.create();
 
     @Override
     protected void createCasts(CastBuilder casts) {
@@ -88,8 +84,8 @@ public abstract class AsFunction extends RBuiltinNode {
             saveArguments = SaveArgumentsNode.NO_ARGS;
             formals = FormalArguments.NO_ARGS;
         } else {
-            assert x.getNames(attrProfiles) != null;
-            RStringVector names = x.getNames(attrProfiles);
+            assert x.getNames() != null;
+            RStringVector names = x.getNames();
             String[] argumentNames = new String[x.getLength() - 1];
             RNode[] defaultValues = new RNode[x.getLength() - 1];
             AccessArgumentNode[] argAccessNodes = new AccessArgumentNode[x.getLength() - 1];
@@ -147,9 +143,8 @@ public abstract class AsFunction extends RBuiltinNode {
         FrameDescriptor descriptor = new FrameDescriptor();
         FrameSlotChangeMonitor.initializeFunctionFrameDescriptor("<as.function.default>", descriptor);
         FrameSlotChangeMonitor.initializeEnclosingFrame(descriptor, envir.getFrame());
-        FunctionDefinitionNode rootNode = FunctionDefinitionNode.create(RSyntaxNode.EAGER_DEPARSE, descriptor, null, saveArguments, (RSyntaxNode) body, formals, "from AsFunction", null);
-        RDeparse.ensureSourceSection(rootNode);
+        FunctionDefinitionNode rootNode = FunctionDefinitionNode.create(RSyntaxNode.LAZY_DEPARSE, descriptor, null, saveArguments, (RSyntaxNode) body, formals, "from AsFunction", null);
         RootCallTarget callTarget = Truffle.getRuntime().createCallTarget(rootNode);
-        return RDataFactory.createFunction(RFunction.NO_NAME, callTarget, null, envir.getFrame());
+        return RDataFactory.createFunction(RFunction.NO_NAME, RFunction.NO_NAME, callTarget, null, envir.getFrame());
     }
 }

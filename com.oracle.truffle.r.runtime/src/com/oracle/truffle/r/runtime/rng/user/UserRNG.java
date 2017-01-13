@@ -23,18 +23,26 @@
 package com.oracle.truffle.r.runtime.rng.user;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.RootCallTarget;
+import com.oracle.truffle.api.Truffle;
+import com.oracle.truffle.api.frame.FrameDescriptor;
+import com.oracle.truffle.api.frame.VirtualFrame;
+import com.oracle.truffle.api.nodes.RootNode;
 import com.oracle.truffle.r.runtime.RError;
+import com.oracle.truffle.r.runtime.RInternalError;
+import com.oracle.truffle.r.runtime.context.RContext;
+import com.oracle.truffle.r.runtime.data.RNull;
 import com.oracle.truffle.r.runtime.ffi.DLL;
 import com.oracle.truffle.r.runtime.ffi.DLL.DLLInfo;
 import com.oracle.truffle.r.runtime.ffi.RFFIFactory;
 import com.oracle.truffle.r.runtime.ffi.UserRngRFFI;
-import com.oracle.truffle.r.runtime.rng.RNGInitAdapter;
 import com.oracle.truffle.r.runtime.rng.RRNG.Kind;
+import com.oracle.truffle.r.runtime.rng.RandomNumberGenerator;
 
 /**
  * Interface to a user-supplied RNG.
  */
-public final class UserRNG extends RNGInitAdapter {
+public final class UserRNG implements RandomNumberGenerator {
     private static final boolean OPTIONAL = true;
 
     public enum Function {
@@ -43,7 +51,7 @@ public final class UserRNG extends RNGInitAdapter {
         NSeed(OPTIONAL),
         Seedloc(OPTIONAL);
 
-        private long address;
+        private DLL.SymbolHandle symbolHandle;
         private final String symbol;
         private final boolean optional;
 
@@ -53,41 +61,80 @@ public final class UserRNG extends RNGInitAdapter {
         }
 
         private boolean isDefined() {
-            return address != 0;
+            return symbolHandle != null;
         }
 
-        public long getAddress() {
-            return address;
+        public DLL.SymbolHandle getSymbolHandle() {
+            return symbolHandle;
         }
 
-        private void setAddress(DLLInfo dllInfo) {
-            this.address = findSymbol(symbol, dllInfo, optional);
+        private void setSymbolHandle(DLLInfo dllInfo) {
+            this.symbolHandle = findSymbol(symbol, dllInfo, optional);
         }
 
     }
 
-    private UserRngRFFI userRngRFFI;
     private int nSeeds = 0;
+
+    private abstract static class UserRNGRootNodeAdapter extends RootNode {
+        @Child protected UserRngRFFI.UserRngRFFINode userRngRFFINode = RFFIFactory.getRFFI().getUserRngRFFI().createUserRngRFFINode();
+
+        protected UserRNGRootNodeAdapter() {
+            super(RContext.getRRuntimeASTAccess().getTruffleRLanguage(), null, new FrameDescriptor());
+        }
+    }
+
+    private static final class GenericUserRNGRootNode extends UserRNGRootNodeAdapter {
+        @Override
+        public Object execute(VirtualFrame frame) {
+            Object[] args = frame.getArguments();
+            Function function = (Function) args[0];
+            switch (function) {
+                case Init:
+                    userRngRFFINode.init((int) args[1]);
+                    return RNull.instance;
+                case NSeed:
+                    return userRngRFFINode.nSeed();
+                case Seedloc:
+                    userRngRFFINode.seeds((int[]) args[1]);
+                    return RNull.instance;
+                default:
+                    throw RInternalError.shouldNotReachHere();
+            }
+        }
+    }
+
+    private static final class RandUserRNGRootNode extends UserRNGRootNodeAdapter {
+
+        @Override
+        public Object execute(VirtualFrame frame) {
+            return userRngRFFINode.rand();
+        }
+
+    }
+
+    private RootCallTarget callGeneric;
+    private RootCallTarget callRand;
 
     @Override
     @TruffleBoundary
     public void init(int seed) {
         DLLInfo dllInfo = DLL.findLibraryContainingSymbol(Function.Rand.symbol);
+        callGeneric = Truffle.getRuntime().createCallTarget(new GenericUserRNGRootNode());
         if (dllInfo == null) {
             throw RError.error(RError.NO_CALLER, RError.Message.RNG_SYMBOL, Function.Rand.symbol);
         }
         for (Function f : Function.values()) {
-            f.setAddress(dllInfo);
+            f.setSymbolHandle(dllInfo);
         }
-        userRngRFFI = RFFIFactory.getRFFI().getUserRngRFFI();
         if (Function.Init.isDefined()) {
-            userRngRFFI.init(seed);
+            callGeneric.call(Function.Init, seed);
         }
         if (Function.Seedloc.isDefined() && !Function.NSeed.isDefined()) {
             RError.warning(RError.NO_CALLER, RError.Message.RNG_READ_SEEDS);
         }
         if (Function.NSeed.isDefined()) {
-            int ns = userRngRFFI.nSeed();
+            int ns = (int) callGeneric.call(Function.NSeed);
             if (ns < 0 || ns > 625) {
                 RError.warning(RError.NO_CALLER, RError.Message.GENERIC, "seed length must be in 0...625; ignored");
             } else {
@@ -98,15 +145,16 @@ public final class UserRNG extends RNGInitAdapter {
                  */
             }
         }
+        callRand = Truffle.getRuntime().createCallTarget(new RandUserRNGRootNode());
     }
 
-    private static long findSymbol(String symbol, DLLInfo dllInfo, boolean optional) {
-        long func = DLL.findSymbol(symbol, dllInfo.name, DLL.RegisteredNativeSymbol.any());
+    private static DLL.SymbolHandle findSymbol(String symbol, DLLInfo dllInfo, boolean optional) {
+        DLL.SymbolHandle func = DLL.findSymbol(symbol, dllInfo.name, DLL.RegisteredNativeSymbol.any());
         if (func == DLL.SYMBOL_NOT_FOUND) {
             if (!optional) {
                 throw RError.error(RError.NO_CALLER, RError.Message.RNG_SYMBOL, symbol);
             } else {
-                return 0;
+                return null;
             }
         } else {
             return func;
@@ -124,18 +172,16 @@ public final class UserRNG extends RNGInitAdapter {
         if (!Function.Seedloc.isDefined()) {
             return null;
         }
-        int[] result = new int[nSeeds];
-        userRngRFFI.seeds(result);
+        int[] seeds = new int[nSeeds];
+        callGeneric.call(Function.Seedloc, seeds);
+        int[] result = new int[nSeeds + 1];
+        System.arraycopy(seeds, 0, result, 1, seeds.length);
         return result;
     }
 
     @Override
-    public double[] genrandDouble(int count) {
-        double[] result = new double[count];
-        for (int i = 0; i < count; i++) {
-            result[i] = userRngRFFI.rand();
-        }
-        return result;
+    public double genrandDouble() {
+        return (double) callRand.call();
     }
 
     @Override
@@ -146,6 +192,11 @@ public final class UserRNG extends RNGInitAdapter {
     @Override
     public int getNSeed() {
         return nSeeds;
+    }
+
+    @Override
+    public void setISeed(int[] seeds) {
+        // TODO: userRNG seems to be not using iseed?
     }
 
 }

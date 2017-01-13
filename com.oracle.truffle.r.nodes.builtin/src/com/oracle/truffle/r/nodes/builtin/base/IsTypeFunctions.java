@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,11 +28,19 @@ import static com.oracle.truffle.r.runtime.builtins.RBehavior.PURE;
 import static com.oracle.truffle.r.runtime.builtins.RBuiltinKind.INTERNAL;
 import static com.oracle.truffle.r.runtime.builtins.RBuiltinKind.PRIMITIVE;
 
+import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Fallback;
 import com.oracle.truffle.api.dsl.Specialization;
+import com.oracle.truffle.api.nodes.Node.Child;
+import com.oracle.truffle.api.object.DynamicObject;
+import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 import com.oracle.truffle.api.profiles.ValueProfile;
+import com.oracle.truffle.r.nodes.attributes.GetFixedAttributeNode;
+import com.oracle.truffle.r.nodes.attributes.SpecialAttributesFunctions.GetClassAttributeNode;
+import com.oracle.truffle.r.nodes.attributes.SpecialAttributesFunctions.GetDimAttributeNode;
+import com.oracle.truffle.r.nodes.attributes.SpecialAttributesFunctionsFactory.GetDimAttributeNodeGen;
 import com.oracle.truffle.r.nodes.builtin.CastBuilder;
 import com.oracle.truffle.r.nodes.builtin.RBuiltinNode;
 import com.oracle.truffle.r.nodes.helpers.InheritsCheckNode;
@@ -41,9 +49,7 @@ import com.oracle.truffle.r.runtime.RRuntime;
 import com.oracle.truffle.r.runtime.RType;
 import com.oracle.truffle.r.runtime.builtins.RBuiltin;
 import com.oracle.truffle.r.runtime.data.RAttributable;
-import com.oracle.truffle.r.runtime.data.RAttributeProfiles;
 import com.oracle.truffle.r.runtime.data.RComplex;
-import com.oracle.truffle.r.runtime.data.RDouble;
 import com.oracle.truffle.r.runtime.data.RExpression;
 import com.oracle.truffle.r.runtime.data.RFunction;
 import com.oracle.truffle.r.runtime.data.RLanguage;
@@ -60,7 +66,6 @@ import com.oracle.truffle.r.runtime.data.model.RAbstractLogicalVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractRawVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractStringVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractVector;
-import com.oracle.truffle.r.runtime.nodes.RNode;
 
 /**
  * Handles all builtin functions of the form {@code is.xxx}, where is {@code xxx} is a "type".
@@ -80,11 +85,14 @@ public class IsTypeFunctions {
     @RBuiltin(name = "is.array", kind = PRIMITIVE, parameterNames = {"x"}, behavior = PURE)
     public abstract static class IsArray extends MissingAdapter {
 
+        private final ConditionProfile isArrayProfile = ConditionProfile.createBinaryProfile();
+        @Child private GetDimAttributeNode getDim = GetDimAttributeNodeGen.create();
+
         public abstract byte execute(Object value);
 
         @Specialization
         protected byte isType(RAbstractVector vector) {
-            return RRuntime.asLogical(vector.isArray());
+            return RRuntime.asLogical(isArrayProfile.profile(getDim.isArray(vector)));
         }
 
         @Specialization(guards = {"!isRMissing(value)", "!isRAbstractVector(value)"})
@@ -333,10 +341,11 @@ public class IsTypeFunctions {
     public abstract static class IsMatrix extends MissingAdapter {
 
         private final ConditionProfile isMatrixProfile = ConditionProfile.createBinaryProfile();
+        @Child private GetDimAttributeNode getDim = GetDimAttributeNodeGen.create();
 
         @Specialization
         protected byte isType(RAbstractVector vector) {
-            return RRuntime.asLogical(isMatrixProfile.profile(vector.isMatrix()));
+            return RRuntime.asLogical(isMatrixProfile.profile(getDim.isMatrix(vector)));
         }
 
         @Specialization(guards = {"!isRMissing(value)", "!isRAbstractVector(value)"})
@@ -417,14 +426,13 @@ public class IsTypeFunctions {
     @RBuiltin(name = "is.object", kind = PRIMITIVE, parameterNames = {"x"}, behavior = PURE)
     public abstract static class IsObject extends MissingAdapter {
 
-        private final RAttributeProfiles attrProfiles = RAttributeProfiles.create();
+        @Child private GetClassAttributeNode getClassNode = GetClassAttributeNode.create();
 
         public abstract byte execute(Object value);
 
         @Specialization
-        protected byte isObject(RAttributable arg, //
-                        @Cached("createClassProfile()") ValueProfile profile) {
-            return RRuntime.asLogical(profile.profile(arg).isObject(attrProfiles));
+        protected byte isObject(RAttributable arg) {
+            return RRuntime.asLogical(getClassNode.isObject(arg));
         }
 
         @Specialization(guards = {"!isRMissing(value)", "!isRAttributable(value)"})
@@ -472,27 +480,37 @@ public class IsTypeFunctions {
     @RBuiltin(name = "is.vector", kind = INTERNAL, parameterNames = {"x", "mode"}, behavior = PURE)
     public abstract static class IsVector extends RBuiltinNode {
 
-        private final RAttributeProfiles attrProfiles = RAttributeProfiles.create();
+        private final ConditionProfile attrNull = ConditionProfile.createBinaryProfile();
+        private final ConditionProfile attrEmpty = ConditionProfile.createBinaryProfile();
+        private final ConditionProfile attrNames = ConditionProfile.createBinaryProfile();
+        private final BranchProfile namesAttrProfile = BranchProfile.create();
+        @Child private GetFixedAttributeNode namesGetter = GetFixedAttributeNode.createNames();
 
         @Override
         protected void createCasts(CastBuilder casts) {
             casts.arg("x").conf(c -> c.allowNull().mustNotBeMissing(null, RError.Message.ARGUMENT_MISSING, "x"));
-            casts.arg("mode").defaultError(this, RError.Message.INVALID_ARGUMENT, "mode").mustBe(stringValue()).asStringVector().mustBe(size(1));
+            casts.arg("mode").defaultError(this, RError.Message.INVALID_ARGUMENT, "mode").mustBe(stringValue()).asStringVector().mustBe(size(1)).findFirst();
         }
 
-        @Override
-        public Object[] getDefaultParameterValues() {
-            // INTERNAL does not need default parameters
-            return RNode.EMPTY_OBJECT_ARRAY;
+        @TruffleBoundary
+        protected static RType typeFromMode(String mode) {
+            return RType.fromMode(mode);
         }
 
-        @Specialization
-        protected byte isVector(RAbstractVector x, String mode) {
-            if (!namesOnlyOrNoAttr(x) || !modeIsAnyOrMatches(x, mode)) {
-                return RRuntime.LOGICAL_FALSE;
-            } else {
+        @Specialization(limit = "5", guards = "cachedMode == mode")
+        protected byte isVectorCached(RAbstractVector x, String mode,
+                        @Cached("mode") String cachedMode,
+                        @Cached("typeFromMode(mode)") RType type) {
+            if (namesOnlyOrNoAttr(x) && (type == RType.Any || x.getRType() == type)) {
                 return RRuntime.LOGICAL_TRUE;
+            } else {
+                return RRuntime.LOGICAL_FALSE;
             }
+        }
+
+        @Specialization(contains = "isVectorCached")
+        protected byte isVector(RAbstractVector x, String mode) {
+            return isVectorCached(x, mode, mode, typeFromMode(mode));
         }
 
         @Fallback
@@ -501,19 +519,12 @@ public class IsTypeFunctions {
         }
 
         private boolean namesOnlyOrNoAttr(RAbstractVector x) {
-            // there should be no attributes other than names
-            if (x.getNames(attrProfiles) == null) {
-                assert x.getAttributes() == null || x.getAttributes().size() > 0;
-                return x.getAttributes() == null ? true : false;
+            DynamicObject attributes = x.getAttributes();
+            if (attrNull.profile(attributes == null) || attrEmpty.profile(attributes.size() == 0)) {
+                return true;
             } else {
-                assert x.getAttributes() != null;
-                return x.getAttributes().size() == 1 ? true : false;
+                return attributes.size() == 1 && attrNames.profile(namesGetter.execute(attributes) != null);
             }
-        }
-
-        private static boolean modeIsAnyOrMatches(RAbstractVector x, String mode) {
-            return RType.Any.getName().equals(mode) || (x instanceof RList && mode.equals("list")) || (x.getElementClass() == RDouble.class && RType.Double.getName().equals(mode)) ||
-                            RRuntime.classToString(x.getElementClass()).equals(mode);
         }
     }
 }

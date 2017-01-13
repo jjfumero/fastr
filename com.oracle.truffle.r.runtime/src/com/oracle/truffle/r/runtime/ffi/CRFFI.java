@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2016, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,17 +22,20 @@
  */
 package com.oracle.truffle.r.runtime.ffi;
 
+import com.oracle.truffle.api.nodes.Node;
+
 /**
  * Support for the {.C} and {.Fortran} calls.
  */
 public interface CRFFI {
-    /**
-     * Invoke the native method identified by {@code symbolInfo} passing it the arguments in
-     * {@code args}. The values in {@code args} should be native types,e.g., {@code double[]} not
-     * {@code RDoubleVector}.
-     *
-     * @param address the target address of the native method
-     * @param args native arguments
-     */
-    void invoke(long address, Object[] args);
+    abstract class CRFFINode extends Node {
+        /**
+         * Invoke the native method identified by {@code symbolInfo} passing it the arguments in
+         * {@code args}. The values in {@code args} should be native types,e.g., {@code double[]}
+         * not {@code RDoubleVector}.
+         */
+        public abstract void invoke(NativeCallInfo nativeCallInfo, Object[] args);
+    }
+
+    CRFFINode createCRFFINode();
 }

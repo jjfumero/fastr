@@ -28,7 +28,7 @@
 /com.oracle.truffle.r.native/include/linked
 /com.oracle.truffle.r.native/fficall/jni.done
 /com.oracle.truffle.r.native/fficall/jniboot.done
-
+/com.oracle.truffle.r.native.recommended/install.recommended
 /com.oracle.truffle.r.test.native/packages/copy_recommended
 /com.oracle.truffle.r.test.native/packages/recommended
 /com.oracle.truffle.r.test.native/packages/*/lib/*
@@ -73,7 +73,7 @@
 *.dot
 *.pyc
 *.hprof
-\javafilelist.txt
+javafilelist.txt
 .hprof.txt
 /compilations-*.cfg
 /graal/.*/build.xml
@@ -88,8 +88,8 @@ output.cfg
 **/nbproject/**
 **/build.xml
 /scratch/
-/test/
-/test_gnur/
+/test.fastr/
+/test.gnur/
 scratch/
 bin/
 share/
@@ -127,5 +127,8 @@ test_gnur
 test_fastr
 lib.install.cran*
 package.blacklist
+*.ll
+*.su
+*.bc
 com.oracle.truffle.r.test.native/embedded/lib
 bench-results.json

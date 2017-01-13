@@ -35,6 +35,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.vm.PolyglotEngine;
 import com.oracle.truffle.r.runtime.context.RContext;
 import com.oracle.truffle.r.runtime.ffi.RFFIFactory;
 
@@ -67,8 +68,7 @@ public final class REnvVars implements RContext.ContextState {
         envVars.put("R_SHARE_DIR", fileSystem.getPath(rHome, "share").toString());
         String rLibsUserProperty = envVars.get("R_LIBS_USER");
         if (rLibsUserProperty == null) {
-            String os = System.getProperty("os.name");
-            if (os.contains("Mac OS")) {
+            if (isMacOS()) {
                 rLibsUserProperty = "~/Library/R/%v/library";
             } else {
                 rLibsUserProperty = "~/R/%p-library/%v";
@@ -139,12 +139,24 @@ public final class REnvVars implements RContext.ContextState {
         return val != null ? val : envVars.get(var.toUpperCase());
     }
 
+    private static boolean isMacOS() {
+        String os = System.getProperty("os.name");
+        return os.contains("Mac OS");
+    }
+
     private static final String R_HOME = "R_HOME";
 
     /**
      * Cached value of {@code R_HOME}.
      */
     private static String rHome;
+
+    /**
+     * Returns a file that only exists in a FastR {@code R_HOME}.
+     */
+    private static String markerFile() {
+        return "libjniboot." + (isMacOS() ? "dylib" : "so");
+    }
 
     /**
      * Returns the value of the {@code R_HOME} environment variable (setting it in the unusual case
@@ -157,22 +169,48 @@ public final class REnvVars implements RContext.ContextState {
             rHome = System.getenv(R_HOME);
             Path rHomePath;
             if (rHome == null) {
-                /*
-                 * The only time this can happen legitimately is when run under the graalvm shell,
-                 * which does not execute the shell script that normally sets R_HOME.
-                 */
-                rHomePath = Paths.get(REnvVars.class.getProtectionDomain().getCodeSource().getLocation().getPath()).getParent();
+                rHomePath = getRHomePath();
             } else {
                 rHomePath = Paths.get(rHome);
             }
-            // Sanity check on the expected structure of an R_HOME
-            Path bin = rHomePath.resolve("bin");
-            if (!(Files.exists(bin) && Files.isDirectory(bin) && Files.exists(bin.resolve("R")))) {
+            if (!validateRHome(rHomePath, markerFile())) {
                 Utils.rSuicide("R_HOME is not set correctly");
             }
             rHome = rHomePath.toString();
         }
         return rHome;
+    }
+
+    /**
+     * In the case where {@code R_HOME} is not set, which should only occur when FastR is invoked
+     * from a {@link PolyglotEngine} created by another language, we try to locate the
+     * {@code R_HOME} dynamically by using the location of this class. The logic varies depending on
+     * whether this class was stored in a {@code .jar} file or in a {@code .class} file in a
+     * directory.
+     *
+     * @return either a valid {@code R_HOME} or {@code null}
+     */
+    private static Path getRHomePath() {
+        Path path = Paths.get(REnvVars.class.getProtectionDomain().getCodeSource().getLocation().getPath()).getParent();
+        String markerFile = markerFile();
+        while (path != null) {
+            if (validateRHome(path, markerFile)) {
+                return path;
+            }
+            path = path.getParent();
+        }
+        return path;
+    }
+
+    /**
+     * Sanity check on the expected structure of an {@code R_HOME}.
+     */
+    private static boolean validateRHome(Path path, String markerFile) {
+        if (path == null) {
+            return false;
+        }
+        Path lib = path.resolve("lib");
+        return Files.exists(lib) && Files.isDirectory(lib) && Files.exists(lib.resolve(markerFile));
     }
 
     private void checkRHome() {
@@ -216,7 +254,6 @@ public final class REnvVars implements RContext.ContextState {
                 }
                 String var = line.substring(0, ix);
                 String value = expandParameters(line.substring(ix + 1)).trim();
-                // GnuR does not seem to remove quotes, although the spec says it should
                 envVars.put(var, value);
             }
         }
@@ -239,7 +276,7 @@ public final class REnvVars implements RContext.ContextState {
             }
             String paramValue = envVars.get(paramName);
             if (paramValue == null || paramValue.length() == 0) {
-                paramValue = paramDefault;
+                paramValue = stripQuotes(paramDefault);
             }
             result.append(paramValue);
             x = paramEnd + 1;
@@ -247,6 +284,17 @@ public final class REnvVars implements RContext.ContextState {
         }
         result.append(value.substring(x));
         return result.toString();
+    }
+
+    private static String stripQuotes(String s) {
+        if (s.length() == 0) {
+            return s;
+        }
+        if (s.charAt(0) == '\'') {
+            return s.substring(1, s.length() - 1);
+        } else {
+            return s;
+        }
     }
 
     @TruffleBoundary

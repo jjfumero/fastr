@@ -22,13 +22,11 @@
  */
 package com.oracle.truffle.r.nodes;
 
-import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.frame.FrameDescriptor;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.RootNode;
 import com.oracle.truffle.api.profiles.ConditionProfile;
-import com.oracle.truffle.api.source.SourceSection;
 import com.oracle.truffle.r.nodes.builtin.RBuiltinFactory;
 import com.oracle.truffle.r.nodes.builtin.RBuiltinNode;
 import com.oracle.truffle.r.nodes.function.FormalArguments;
@@ -55,50 +53,43 @@ public abstract class RRootNode extends RootNode implements HasSignature {
 
     private FastPathFactory fastPath;
 
-    protected RRootNode(SourceSection src, FormalArguments formalArguments, FrameDescriptor frameDescriptor, FastPathFactory fastPath) {
-        super(RContext.getRForeignAccessFactory().getTruffleLanguage(), checkSourceSection(src), frameDescriptor);
+    protected RRootNode(FormalArguments formalArguments, FrameDescriptor frameDescriptor, FastPathFactory fastPath) {
+        super(RContext.getRForeignAccessFactory().getTruffleLanguage(), RSyntaxNode.SOURCE_UNAVAILABLE, frameDescriptor);
         this.formalArguments = formalArguments;
         this.fastPath = fastPath;
     }
 
-    private static SourceSection checkSourceSection(SourceSection src) {
-        if (src == null) {
-            return RSyntaxNode.SOURCE_UNAVAILABLE;
-        } else {
-            return src;
-        }
-    }
-
+    @Override
     public abstract RootCallTarget duplicateWithNewFrameDescriptor();
 
-    protected void verifyEnclosingAssumptions(VirtualFrame vf) {
+    protected final void verifyEnclosingAssumptions(VirtualFrame vf) {
         RArguments.setIsIrregular(vf, irregularFrameProfile.profile(RArguments.getIsIrregular(vf)));
     }
 
     /**
      * @return The number of parameters this functions expects
      */
-    public int getParameterCount() {
+    public final int getParameterCount() {
         return formalArguments.getSignature().getLength();
     }
 
     /**
      * @return {@link #formalArguments}
      */
-    public FormalArguments getFormalArguments() {
+    public final FormalArguments getFormalArguments() {
         return formalArguments;
     }
 
     @Override
-    public ArgumentsSignature getSignature() {
+    public final ArgumentsSignature getSignature() {
         return formalArguments.getSignature();
     }
 
-    public FastPathFactory getFastPath() {
+    public final FastPathFactory getFastPath() {
         return fastPath;
     }
 
-    public void setFastPath(FastPathFactory fastPath) {
+    public final void setFastPath(FastPathFactory fastPath) {
         this.fastPath = fastPath;
     }
 
@@ -110,18 +101,13 @@ public abstract class RRootNode extends RootNode implements HasSignature {
 
     public abstract RBuiltinFactory getBuiltin();
 
-    @TruffleBoundary
-    public String getSourceCode() {
-        SourceSection ss = getSourceSection();
-        if (ss != null) {
-            return ss.getCode();
-        } else {
-            return null;
-        }
-    }
-
     @Override
     public boolean isCloningAllowed() {
         return true;
+    }
+
+    @Override
+    public final String toString() {
+        return getName();
     }
 }

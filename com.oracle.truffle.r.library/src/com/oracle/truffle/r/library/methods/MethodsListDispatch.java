@@ -19,10 +19,11 @@ import com.oracle.truffle.api.frame.FrameDescriptor;
 import com.oracle.truffle.api.frame.FrameSlot;
 import com.oracle.truffle.api.frame.MaterializedFrame;
 import com.oracle.truffle.r.library.methods.MethodsListDispatchFactory.GetGenericInternalNodeGen;
+import com.oracle.truffle.r.nodes.access.AccessSlotNode;
+import com.oracle.truffle.r.nodes.access.AccessSlotNodeGen;
 import com.oracle.truffle.r.nodes.access.variables.LocalReadVariableNode;
 import com.oracle.truffle.r.nodes.access.variables.ReadVariableNode;
-import com.oracle.truffle.r.nodes.attributes.AttributeAccess;
-import com.oracle.truffle.r.nodes.attributes.AttributeAccessNodeGen;
+import com.oracle.truffle.r.nodes.attributes.GetFixedAttributeNode;
 import com.oracle.truffle.r.nodes.builtin.RExternalBuiltinNode;
 import com.oracle.truffle.r.nodes.function.ClassHierarchyScalarNode;
 import com.oracle.truffle.r.nodes.function.ClassHierarchyScalarNodeGen;
@@ -38,7 +39,6 @@ import com.oracle.truffle.r.runtime.RInternalError;
 import com.oracle.truffle.r.runtime.RRuntime;
 import com.oracle.truffle.r.runtime.context.RContext;
 import com.oracle.truffle.r.runtime.data.RAttributable;
-import com.oracle.truffle.r.runtime.data.RAttributeProfiles;
 import com.oracle.truffle.r.runtime.data.RDataFactory;
 import com.oracle.truffle.r.runtime.data.RExternalPtr;
 import com.oracle.truffle.r.runtime.data.RFunction;
@@ -51,6 +51,7 @@ import com.oracle.truffle.r.runtime.data.model.RAbstractLogicalVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractStringVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractVector;
 import com.oracle.truffle.r.runtime.env.REnvironment;
+import com.oracle.truffle.r.runtime.ffi.DLL;
 import com.oracle.truffle.r.runtime.nodes.RBaseNode;
 import com.oracle.truffle.r.runtime.nodes.RNode;
 import com.oracle.truffle.r.runtime.nodes.RSyntaxNode;
@@ -91,15 +92,15 @@ public class MethodsListDispatch {
 
     public abstract static class R_getClassFromCache extends RExternalBuiltinNode.Arg2 {
 
-        protected AttributeAccess createPckgAttrAccess() {
-            return AttributeAccessNodeGen.create(RRuntime.PCKG_ATTR_KEY);
+        protected GetFixedAttributeNode createPckgAttrAccess() {
+            return GetFixedAttributeNode.create(RRuntime.PCKG_ATTR_KEY);
         }
 
         @Specialization
         @TruffleBoundary
         protected Object callGetClassFromCache(RAbstractStringVector klass, REnvironment table, //
-                        @Cached("createPckgAttrAccess()") AttributeAccess klassPckgAttrAccess, //
-                        @Cached("createPckgAttrAccess()") AttributeAccess valPckgAttrAccess) {
+                        @Cached("createPckgAttrAccess()") GetFixedAttributeNode klassPckgAttrAccess, //
+                        @Cached("createPckgAttrAccess()") GetFixedAttributeNode valPckgAttrAccess) {
             String klassString = klass.getLength() == 0 ? RRuntime.STRING_NA : klass.getDataAt(0);
 
             Object value = table.get(klassString);
@@ -154,6 +155,14 @@ public class MethodsListDispatch {
     }
 
     public abstract static class R_M_setPrimitiveMethods extends RExternalBuiltinNode.Arg5 {
+        @Child private AccessSlotNode accessSlotNode;
+
+        private AccessSlotNode initAccessSlotNode() {
+            if (accessSlotNode == null) {
+                accessSlotNode = insert(AccessSlotNodeGen.create(true, null, null));
+            }
+            return accessSlotNode;
+        }
 
         @Specialization
         @TruffleBoundary
@@ -176,7 +185,16 @@ public class MethodsListDispatch {
                 return value;
             }
 
-            setPrimitiveMethodsInternal(op, codeVecString, fundef, mlist);
+            Object opx = op;
+            if ((op instanceof RFunction) && !((RFunction) op).isBuiltin()) {
+                String internalName = RRuntime.asString(initAccessSlotNode().executeAccess(op, "internal"));
+                opx = RContext.lookupBuiltin(internalName);
+                if (opx == null) {
+                    throw RError.error(this, RError.Message.GENERIC, "'internal' slot does not name an internal function: " + internalName);
+                }
+            }
+
+            setPrimitiveMethodsInternal(opx, codeVecString, fundef, mlist);
             return fnameString;
         }
 
@@ -288,10 +306,11 @@ public class MethodsListDispatch {
 
         public abstract Object executeObject(String name, REnvironment rho, String pckg);
 
-        private final RAttributeProfiles attrProfiles = RAttributeProfiles.create();
         @Child private CastToVectorNode castToVector = CastToVectorNodeGen.create(false);
         @Child private ClassHierarchyScalarNode classHierarchyNode = ClassHierarchyScalarNodeGen.create();
         @Child private PromiseHelperNode promiseHelper;
+        @Child private GetFixedAttributeNode getGenericAttrNode = GetFixedAttributeNode.create(RRuntime.GENERIC_ATTR_KEY);
+        @Child private GetFixedAttributeNode getPckgAttrNode = GetFixedAttributeNode.create(RRuntime.PCKG_ATTR_KEY);
 
         @Specialization
         protected Object getGeneric(String name, REnvironment env, String pckg) {
@@ -308,9 +327,9 @@ public class MethodsListDispatch {
                 if (o != null) {
                     RAttributable vl = (RAttributable) o;
                     boolean ok = false;
-                    if (vl instanceof RFunction && vl.getAttr(attrProfiles, RRuntime.GENERIC_ATTR_KEY) != null) {
+                    if (vl instanceof RFunction && getGenericAttrNode.execute(vl) != null) {
                         if (pckg.length() > 0) {
-                            Object gpckgObj = vl.getAttr(attrProfiles, RRuntime.PCKG_ATTR_KEY);
+                            Object gpckgObj = getPckgAttrNode.execute(vl);
                             if (gpckgObj != null) {
                                 String gpckg = checkSingleString(castToVector.execute(gpckgObj), false, "The \"package\" slot in generic function object", this, classHierarchyNode);
                                 ok = pckg.equals(gpckg);
@@ -399,7 +418,7 @@ public class MethodsListDispatch {
             // whose only purpose is to throw an error indicating that it shouldn't be called
             // TODO: finesse error handling in case a function stored in this pointer is actually
             // called
-            return RDataFactory.createExternalPtr(0, RNull.instance, RNull.instance);
+            return RDataFactory.createExternalPtr(new DLL.SymbolHandle(0L), RNull.instance, RNull.instance);
         }
     }
 }

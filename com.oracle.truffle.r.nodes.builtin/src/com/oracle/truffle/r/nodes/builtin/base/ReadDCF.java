@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,7 +22,7 @@
  */
 package com.oracle.truffle.r.nodes.builtin.base;
 
-import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.*;
+import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.emptyStringVector;
 import static com.oracle.truffle.r.runtime.builtins.RBehavior.IO;
 import static com.oracle.truffle.r.runtime.builtins.RBuiltinKind.INTERNAL;
 
@@ -39,6 +39,7 @@ import com.oracle.truffle.r.nodes.builtin.CastBuilder;
 import com.oracle.truffle.r.nodes.builtin.RBuiltinNode;
 import com.oracle.truffle.r.runtime.DCF;
 import com.oracle.truffle.r.runtime.RError;
+import com.oracle.truffle.r.runtime.RError.Message;
 import com.oracle.truffle.r.runtime.RRuntime;
 import com.oracle.truffle.r.runtime.builtins.RBuiltin;
 import com.oracle.truffle.r.runtime.conn.RConnection;
@@ -53,16 +54,16 @@ public abstract class ReadDCF extends RBuiltinNode {
 
     @Override
     protected void createCasts(CastBuilder casts) {
-        casts.arg("conn").mustBe(RConnection.class);
+        casts.arg("conn").defaultError(Message.INVALID_CONNECTION).asIntegerVector().findFirst();
         casts.arg("fields").mapNull(emptyStringVector()).asStringVector();
         casts.arg("keepwhite").mapNull(emptyStringVector()).asStringVector();
     }
 
     @Specialization
     @TruffleBoundary
-    protected RStringVector doReadDCF(RConnection conn, RAbstractStringVector fields, RAbstractStringVector keepWhite) {
+    protected RStringVector doReadDCF(int conn, RAbstractStringVector fields, RAbstractStringVector keepWhite) {
         DCF dcf = null;
-        try (RConnection openConn = conn.forceOpen("r")) {
+        try (RConnection openConn = RConnection.fromIndex(conn).forceOpen("r")) {
             Set<String> keepWhiteSet = null;
             if (keepWhite.getLength() > 0) {
                 keepWhiteSet = new HashSet<>(keepWhite.getLength());
