@@ -4,19 +4,14 @@
  * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * Copyright (c) 2014, Purdue University
- * Copyright (c) 2014, 2016, Oracle and/or its affiliates
+ * Copyright (c) 2014, 2017, Oracle and/or its affiliates
  *
  * All rights reserved.
  */
 package com.oracle.truffle.r.nodes.builtin.base;
 
 import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.asDoubleVector;
-import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.asIntegerVector;
-import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.chain;
 import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.complexValue;
-import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.integerValue;
-import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.logicalValue;
-import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.mapIf;
 import static com.oracle.truffle.r.runtime.RDispatch.MATH_GROUP_GENERIC;
 import static com.oracle.truffle.r.runtime.builtins.RBehavior.PURE;
 import static com.oracle.truffle.r.runtime.builtins.RBuiltinKind.PRIMITIVE;
@@ -38,6 +33,7 @@ import com.oracle.truffle.r.runtime.data.RNull;
 import com.oracle.truffle.r.runtime.data.model.RAbstractComplexVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractDoubleVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractIntVector;
+import com.oracle.truffle.r.runtime.data.model.RAbstractVector;
 import com.oracle.truffle.r.runtime.ops.BinaryArithmetic;
 import com.oracle.truffle.r.runtime.ops.na.NACheck;
 
@@ -51,7 +47,7 @@ public abstract class CumProd extends RBuiltinNode {
 
     @Override
     protected void createCasts(CastBuilder casts) {
-        casts.arg("x").allowNull().mapIf(integerValue().or(logicalValue()), asIntegerVector(), chain(mapIf(complexValue().not(), asDoubleVector())).end());
+        casts.arg("x").allowNull().mapIf(complexValue().not(), asDoubleVector(true, false, false));
     }
 
     @Specialization
@@ -69,26 +65,14 @@ public abstract class CumProd extends RBuiltinNode {
         return RDataFactory.createEmptyDoubleVector();
     }
 
-    @Specialization
-    protected RIntVector cumprod(RAbstractIntVector arg) {
-        int[] array = new int[arg.getLength()];
-        na.enable(arg);
-        int prev = 1;
-        int i;
-        for (i = 0; i < arg.getLength(); i++) {
-            if (na.check(arg.getDataAt(i))) {
-                break;
-            }
-            prev = mul.op(prev, arg.getDataAt(i));
-            if (na.check(prev)) {
-                break;
-            }
-            array[i] = prev;
-        }
-        if (!na.neverSeenNA()) {
-            Arrays.fill(array, i, array.length, RRuntime.INT_NA);
-        }
-        return RDataFactory.createIntVector(array, !na.neverSeenNA(), getNamesNode.getNames(arg));
+    @Specialization(guards = "emptyVec.getLength()==0")
+    protected RAbstractVector cumEmpty(RAbstractComplexVector emptyVec) {
+        return RDataFactory.createComplexVector(new double[0], true, emptyVec.getNames());
+    }
+
+    @Specialization(guards = "emptyVec.getLength()==0")
+    protected RAbstractVector cumEmpty(RAbstractDoubleVector emptyVec) {
+        return RDataFactory.createDoubleVector(new double[0], true, emptyVec.getNames());
     }
 
     @Specialization

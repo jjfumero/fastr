@@ -243,6 +243,7 @@ public final class RError extends RuntimeException {
         NA_UNEXP("missing value where TRUE/FALSE needed"),
         LENGTH_NOT_MULTI("longer object length is not a multiple of shorter object length"),
         INTEGER_OVERFLOW("NAs produced by integer overflow"),
+        INTEGER_OVERFLOW_USE_SUM_NUMERIC("integer overflow - use sum(as.numeric(.))"),
         NA_OR_NAN("NA/NaN argument"),
         SUBSCRIPT_BOUNDS("subscript out of bounds"),
         SUBSCRIPT_BOUNDS_SUB("[[ ]] subscript out of bounds"),
@@ -724,7 +725,7 @@ public final class RError extends RuntimeException {
         PRIM_GENERIC_NOT_FUNCTION("the formal definition of a primitive generic must be a function object (got type '%s')"),
         NON_INTEGER_VALUE("non-integer value %s qualified with L; using numeric value"),
         NON_INTEGER_N("non-integer %s = %f"),
-        INTEGER_VALUE_DECIAML("integer literal %s contains decimal; using numeric value"),
+        INTEGER_VALUE_DECIMAL("integer literal %s contains decimal; using numeric value"),
         INTEGER_VALUE_UNNECESARY_DECIMAL("integer literal %s contains unnecessary decimal point"),
         NON_LANG_ASSIGNMENT_TARGET("target of assignment expands to non-language object"),
         INVALID_LARGE_NA_VALUE("invalid '%s' value (too large or NA)"),
@@ -776,7 +777,10 @@ public final class RError extends RuntimeException {
         FIRST_ELEMENT_ONLY("only first element of '%s' argument used"),
         MUST_BE_GE_ONE("'%s' must be of length >= 1"),
         MORE_THAN_ONE_MATCH("there is more than one match in '%s'"),
-        TOO_MANY_ARGS("too many arguments");
+        TOO_MANY_ARGS("too many arguments"),
+        ARG_MUST_BE_CHARACTER("argument '%s' must be character"),
+        INCORRECT_NOF_ARGS("Incorrect number of arguments (%d), expecting %d for '%s'"),
+        MACRO_CAN_BE_APPLIED_TO("%s can only be applied to a '%s', not a '%s'");
 
         public final String message;
         final boolean hasArgs;
@@ -785,6 +789,5 @@ public final class RError extends RuntimeException {
             this.message = message;
             hasArgs = message.indexOf('%') >= 0;
         }
-
     }
 }

@@ -5,11 +5,14 @@
  *
  * Copyright (c) 1995-2012, The R Core Team
  * Copyright (c) 2003, The R Foundation
- * Copyright (c) 2015, 2016, Oracle and/or its affiliates
+ * Copyright (c) 2015, 2017, Oracle and/or its affiliates
  *
  * All rights reserved.
  */
 package com.oracle.truffle.r.library.methods;
+
+import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.instanceOf;
+import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.stringValue;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
@@ -24,6 +27,7 @@ import com.oracle.truffle.r.nodes.access.AccessSlotNodeGen;
 import com.oracle.truffle.r.nodes.access.variables.LocalReadVariableNode;
 import com.oracle.truffle.r.nodes.access.variables.ReadVariableNode;
 import com.oracle.truffle.r.nodes.attributes.GetFixedAttributeNode;
+import com.oracle.truffle.r.nodes.builtin.CastBuilder;
 import com.oracle.truffle.r.nodes.builtin.RExternalBuiltinNode;
 import com.oracle.truffle.r.nodes.function.ClassHierarchyScalarNode;
 import com.oracle.truffle.r.nodes.function.ClassHierarchyScalarNodeGen;
@@ -47,7 +51,6 @@ import com.oracle.truffle.r.runtime.data.RNull;
 import com.oracle.truffle.r.runtime.data.RPromise;
 import com.oracle.truffle.r.runtime.data.RS4Object;
 import com.oracle.truffle.r.runtime.data.RTypedValue;
-import com.oracle.truffle.r.runtime.data.model.RAbstractLogicalVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractStringVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractVector;
 import com.oracle.truffle.r.runtime.env.REnvironment;
@@ -69,6 +72,12 @@ public class MethodsListDispatch {
             // TBD what should we actually do here
             return env;
         }
+
+        @Fallback
+        protected Object initMethodFallback(@SuppressWarnings("unused") Object x) {
+            return RNull.instance;
+        }
+
     }
 
     public abstract static class R_methodsPackageMetaName extends RExternalBuiltinNode.Arg3 {
@@ -92,16 +101,31 @@ public class MethodsListDispatch {
 
     public abstract static class R_getClassFromCache extends RExternalBuiltinNode.Arg2 {
 
+        @Override
+        protected void createCasts(CastBuilder casts) {
+            //@formatter:off
+            casts.arg(0, "klass").defaultError(RError.Message.GENERIC, "class should be either a character-string name or a class definition").
+                mustNotBeNull().
+                mustBe(stringValue().or(instanceOf(RS4Object.class)));
+
+            casts.arg(1, "table").mustNotBeNull(RError.NO_CALLER, RError.Message.USE_NULL_ENV_DEFUNCT).mustBe(instanceOf(REnvironment.class));
+            //@formatter:on
+        }
+
         protected GetFixedAttributeNode createPckgAttrAccess() {
             return GetFixedAttributeNode.create(RRuntime.PCKG_ATTR_KEY);
         }
 
         @Specialization
         @TruffleBoundary
-        protected Object callGetClassFromCache(RAbstractStringVector klass, REnvironment table, //
-                        @Cached("createPckgAttrAccess()") GetFixedAttributeNode klassPckgAttrAccess, //
+        protected Object callGetClassFromCache(RAbstractStringVector klass, REnvironment table,
+                        @Cached("createPckgAttrAccess()") GetFixedAttributeNode klassPckgAttrAccess,
                         @Cached("createPckgAttrAccess()") GetFixedAttributeNode valPckgAttrAccess) {
             String klassString = klass.getLength() == 0 ? RRuntime.STRING_NA : klass.getDataAt(0);
+
+            if (klassString.length() == 0) {
+                throw RError.error(RError.NO_CALLER, RError.Message.ZERO_LENGTH_VARIABLE);
+            }
 
             Object value = table.get(klassString);
             if (value == null) {
@@ -127,20 +151,19 @@ public class MethodsListDispatch {
             return klass;
         }
 
-        @SuppressWarnings("unused")
-        @Fallback
-        protected Object callGetClassFromCache(Object klass, Object table) {
-            throw RError.error(this, RError.Message.GENERIC, "class should be either a character-string name or a class definition");
-        }
     }
 
     public abstract static class R_set_method_dispatch extends RExternalBuiltinNode.Arg1 {
 
+        @Override
+        protected void createCasts(CastBuilder casts) {
+            casts.arg(0).asLogicalVector().findFirst(RRuntime.LOGICAL_NA);
+        }
+
         @Specialization
         @TruffleBoundary
-        protected Object callSetMethodDispatch(RAbstractLogicalVector onOffVector) {
+        protected Object callSetMethodDispatch(byte onOff) {
             boolean prev = RContext.getInstance().isMethodTableDispatchOn();
-            byte onOff = castLogical(onOffVector);
 
             if (onOff == RRuntime.LOGICAL_NA) {
                 return RRuntime.asLogical(prev);
@@ -334,7 +357,6 @@ public class MethodsListDispatch {
                                 String gpckg = checkSingleString(castToVector.execute(gpckgObj), false, "The \"package\" slot in generic function object", this, classHierarchyNode);
                                 ok = pckg.equals(gpckg);
                             }
-
                         } else {
                             ok = true;
                         }

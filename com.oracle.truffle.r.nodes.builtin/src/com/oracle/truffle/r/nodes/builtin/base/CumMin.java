@@ -4,7 +4,7 @@
  * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * Copyright (c) 2014, Purdue University
- * Copyright (c) 2014, 2016, Oracle and/or its affiliates
+ * Copyright (c) 2014, 2017, Oracle and/or its affiliates
  *
  * All rights reserved.
  */
@@ -35,8 +35,10 @@ import com.oracle.truffle.r.runtime.data.RDoubleVector;
 import com.oracle.truffle.r.runtime.data.RIntSequence;
 import com.oracle.truffle.r.runtime.data.RIntVector;
 import com.oracle.truffle.r.runtime.data.RNull;
+import com.oracle.truffle.r.runtime.data.model.RAbstractComplexVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractDoubleVector;
 import com.oracle.truffle.r.runtime.data.model.RAbstractIntVector;
+import com.oracle.truffle.r.runtime.data.model.RAbstractVector;
 import com.oracle.truffle.r.runtime.ops.na.NACheck;
 
 @RBuiltin(name = "cummin", kind = PRIMITIVE, parameterNames = {"x"}, dispatch = MATH_GROUP_GENERIC, behavior = PURE)
@@ -47,8 +49,8 @@ public abstract class CumMin extends RBuiltinNode {
 
     @Override
     protected void createCasts(CastBuilder casts) {
-        casts.arg("x").allowNull().mustBe(complexValue().not(), RError.Message.CUMMIN_UNDEFINED_FOR_COMPLEX).mapIf(integerValue().or(logicalValue()), asIntegerVector(),
-                        asDoubleVector());
+        casts.arg("x").allowNull().mustBe(complexValue().not(), RError.Message.CUMMIN_UNDEFINED_FOR_COMPLEX).mapIf(integerValue().or(logicalValue()), asIntegerVector(true, false, false),
+                        asDoubleVector(true, false, false));
     }
 
     @Specialization
@@ -66,8 +68,23 @@ public abstract class CumMin extends RBuiltinNode {
         return RDataFactory.createEmptyDoubleVector();
     }
 
+    @Specialization(guards = "emptyVec.getLength()==0")
+    protected RAbstractVector cumEmpty(RAbstractComplexVector emptyVec) {
+        return RDataFactory.createComplexVector(new double[0], true, emptyVec.getNames());
+    }
+
+    @Specialization(guards = "emptyVec.getLength()==0")
+    protected RAbstractVector cumEmpty(RAbstractDoubleVector emptyVec) {
+        return RDataFactory.createDoubleVector(new double[0], true, emptyVec.getNames());
+    }
+
+    @Specialization(guards = "emptyVec.getLength()==0")
+    protected RAbstractVector cumEmpty(RAbstractIntVector emptyVec) {
+        return RDataFactory.createIntVector(new int[0], true, emptyVec.getNames());
+    }
+
     @Specialization
-    protected RAbstractIntVector cumminIntSequence(RIntSequence v, //
+    protected RAbstractIntVector cumminIntSequence(RIntSequence v,
                     @Cached("createBinaryProfile()") ConditionProfile negativeStrideProfile) {
         if (negativeStrideProfile.profile(v.getStride() > 0)) {
             // all numbers are bigger than the first one
@@ -120,5 +137,4 @@ public abstract class CumMin extends RBuiltinNode {
         }
         return RDataFactory.createIntVector(cminV, na.neverSeenNA(), getNamesNode.getNames(v));
     }
-
 }

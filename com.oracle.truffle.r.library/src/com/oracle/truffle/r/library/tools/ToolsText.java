@@ -5,11 +5,14 @@
  *
  * Copyright (c) 1995-2015, The R Core Team
  * Copyright (c) 2003, The R Foundation
- * Copyright (c) 2015, 2016, Oracle and/or its affiliates
+ * Copyright (c) 2015, 2017, Oracle and/or its affiliates
  *
  * All rights reserved.
  */
 package com.oracle.truffle.r.library.tools;
+
+import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.singleElement;
+import static com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef.stringValue;
 
 import java.io.BufferedOutputStream;
 import java.io.FileOutputStream;
@@ -17,9 +20,14 @@ import java.io.IOException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.function.Function;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Specialization;
+import com.oracle.truffle.api.nodes.Node.Child;
+import com.oracle.truffle.r.nodes.builtin.CastBuilder;
+import com.oracle.truffle.r.nodes.builtin.CastBuilder.Predef;
+import com.oracle.truffle.r.nodes.unary.TypeofNode;
 import com.oracle.truffle.r.nodes.builtin.RExternalBuiltinNode;
 import com.oracle.truffle.r.runtime.RError;
 import com.oracle.truffle.r.runtime.RRuntime;
@@ -31,6 +39,17 @@ public class ToolsText {
 
     public abstract static class DoTabExpand extends RExternalBuiltinNode.Arg2 {
 
+        @Child private TypeofNode typeofNode = com.oracle.truffle.r.nodes.unary.TypeofNodeGen.create();
+
+        @Override
+        protected void createCasts(CastBuilder casts) {
+            Function<Object, String> argTypeName = arg -> typeofNode.execute(arg).getName();
+
+            casts.arg(0, "strings").defaultError(RError.NO_CALLER, RError.Message.MACRO_CAN_BE_APPLIED_TO, "STRING_ELT()", "character vector", argTypeName).mustNotBeNull().mustBe(stringValue());
+            casts.arg(1, "starts").defaultError(RError.NO_CALLER, RError.Message.MACRO_CAN_BE_APPLIED_TO, "INTEGER()", "integer", argTypeName).mustNotBeNull().mustBe(
+                            Predef.integerValue()).asIntegerVector();
+        }
+
         @Specialization
         @TruffleBoundary
         protected Object doTabExpand(RAbstractStringVector strings, RAbstractIntVector starts) {
@@ -40,7 +59,7 @@ public class ToolsText {
                 if (input.indexOf('\t') >= 0) {
                     StringBuffer sb = new StringBuffer();
                     int b = 0;
-                    int start = starts.getDataAt(i % data.length);
+                    int start = starts.getDataAt(i % starts.getLength());
                     for (int sx = 0; sx < input.length(); sx++) {
                         char ch = input.charAt(sx);
                         if (ch == '\n') {
@@ -67,16 +86,18 @@ public class ToolsText {
 
     public abstract static class CodeFilesAppend extends RExternalBuiltinNode.Arg2 {
 
+        @Override
+        protected void createCasts(CastBuilder casts) {
+            casts.arg(0, "file1").mustNotBeNull().mustBe(stringValue()).asStringVector().mustBe(singleElement()).findFirst();
+            casts.arg(1, "file2").mustNotBeNull().mustBe(stringValue()).asStringVector();
+        }
+
         @Specialization
         @TruffleBoundary
-        protected Object codeFilesAppend(RAbstractStringVector file1Vector, RAbstractStringVector file2) {
-            if (file1Vector.getLength() != 1) {
-                throw RError.error(this, RError.Message.INVALID_ARGUMENT, "file1");
-            }
+        protected Object codeFilesAppend(String file1, RAbstractStringVector file2) {
             if (file2.getLength() < 1) {
                 return RDataFactory.createEmptyLogicalVector();
             }
-            String file1 = file1Vector.getDataAt(0);
             int n2 = file2.getLength();
             byte[] data = new byte[n2];
             if (!RRuntime.isNA(file1)) {
@@ -100,7 +121,6 @@ public class ToolsText {
                             RError.warning(this, RError.Message.GENERIC, "IO error during file append");
                             // shouldn't happen, just continue with false result
                         }
-
                     }
                 } catch (IOException ex) {
                     // just return logical false

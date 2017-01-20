@@ -58,7 +58,6 @@ public abstract class Quantifier extends RBuiltinNode {
     private final BranchProfile falseBranch = BranchProfile.create();
 
     @Child private TypeofNode typeofNode = com.oracle.truffle.r.nodes.unary.TypeofNodeGen.create();
-    private final Function<Object, String> argTypeName = arg -> typeofNode.execute(arg).getName();
 
     @Children private final CastNode[] argCastNodes = new CastNode[MAX_CACHED_LENGTH];
 
@@ -89,6 +88,7 @@ public abstract class Quantifier extends RBuiltinNode {
 
     private void createArgCast(int index) {
         CastBuilder argCastBuilder = new CastBuilder();
+        Function<Object, String> argTypeName = arg -> typeofNode.execute(arg).getName();
         argCastBuilder.arg(0).allowNull().shouldBe(integerValue().or(logicalValue()).or(instanceOf(RAbstractVector.class).and(size(0))), RError.Message.COERCING_ARGUMENT, argTypeName,
                         "logical").asLogicalVector();
         argCastNodes[index] = insert(new ProfileCastNode(argCastBuilder.getCasts()[0]));
@@ -110,7 +110,7 @@ public abstract class Quantifier extends RBuiltinNode {
 
     @Specialization(limit = "1", guards = {"cachedLength == args.getLength()", "cachedLength < MAX_CACHED_LENGTH"})
     @ExplodeLoop
-    protected byte opCachedLength(RArgsValuesAndNames args, boolean naRm, //
+    protected byte opCachedLength(RArgsValuesAndNames args, boolean naRm,
                     @Cached("args.getLength()") int cachedLength) {
         Object[] arguments = args.getArguments();
 
@@ -177,5 +177,4 @@ public abstract class Quantifier extends RBuiltinNode {
         falseBranch.enter();
         return result;
     }
-
 }
